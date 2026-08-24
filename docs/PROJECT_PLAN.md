@@ -603,7 +603,8 @@ question's data layer.
 
 * [ ] Ingestion per D24: detail fetch, three raw tables, resumable
       status rows, batch cap, exit-3 contract, `sync-segment-efforts`
-      CLI and Make target, sync-state watermark.
+      CLI and Make target, status-row resume (no watermark — the
+      streams pattern; D24).
 * [ ] Staging: `stg_strava__segment_efforts` (effort grain: elapsed and
       moving time s, avg HR, avg cadence, start date, PR rank),
       `stg_strava__segments` (segment grain: name, distance m, average

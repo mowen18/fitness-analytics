@@ -67,6 +67,14 @@ with DAG(
         trigger_rule=TriggerRule.NONE_FAILED,
     )
 
+    sync_segment_efforts = BashOperator(
+        task_id="sync_segment_efforts",
+        bash_command=f"{CLI} sync-segment-efforts",
+        cwd=str(REPO_ROOT),
+        skip_on_exit_code=RATE_LIMIT_STOP_EXIT,
+        trigger_rule=TriggerRule.NONE_FAILED,
+    )
+
     dbt_build = BashOperator(
         task_id="dbt_build",
         bash_command="make dbt-build",
@@ -75,4 +83,11 @@ with DAG(
         trigger_rule=TriggerRule.NONE_FAILED,
     )
 
-    sync_activities >> backfill_coordinates >> sync_weather >> sync_streams >> dbt_build
+    (
+        sync_activities
+        >> backfill_coordinates
+        >> sync_weather
+        >> sync_streams
+        >> sync_segment_efforts
+        >> dbt_build
+    )

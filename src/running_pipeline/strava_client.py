@@ -255,14 +255,19 @@ class StravaClient:
                 )
             page_number += 1
 
-    def get_activity_detail(self, activity_id: int) -> dict | None:
+    def get_activity_detail(
+        self, activity_id: int, include_all_efforts: bool = False
+    ) -> dict | None:
         """DetailedActivity for one activity; None when it no longer exists.
 
         Needed for coordinate resolution: when the map-privacy setting
         strips start_latlng from every payload, the detail response still
-        carries the encoded route in map.polyline.
+        carries the encoded route in map.polyline. Segment ingestion (D24)
+        passes include_all_efforts=True so the response carries every
+        effort, not just the athlete's notable ones.
         """
-        response = self._api_get(f"/activities/{activity_id}", none_on_404=True)
+        params = {"include_all_efforts": "true"} if include_all_efforts else None
+        response = self._api_get(f"/activities/{activity_id}", params=params, none_on_404=True)
         return None if response is None else response.json()
 
     def get_activity_streams(

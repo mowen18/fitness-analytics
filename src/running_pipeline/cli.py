@@ -11,6 +11,7 @@ import psycopg
 from running_pipeline import (
     activity_ingestion,
     coordinate_ingestion,
+    segment_ingestion,
     stream_ingestion,
     weather_ingestion,
 )
@@ -123,6 +124,42 @@ def sync_streams():
         f"Stream backfill {outcome}: eligible={report.eligible} "
         f"succeeded={report.succeeded} unavailable={report.unavailable} "
         f"failed={report.failed} last_processed="
+        f"{report.last_processed_id if report.last_processed_id is not None else 'none'}"
+    )
+    if report.stopped_early:
+        click.echo("Committed rows were kept; re-run later to resume.")
+        sys.exit(3)
+
+
+@cli.command("sync-segment-efforts")
+def sync_segment_efforts():
+    """Backfill segment efforts for D23 rides via detail fetches (resumable)."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+    settings = load_settings()
+    client = StravaClient(settings)
+    try:
+        with get_connection(settings) as conn:
+            report = segment_ingestion.sync_segment_efforts(settings, client, conn)
+    except StravaAuthError as exc:
+        raise click.ClickException(
+            f"{exc}\nIf the refresh token is invalid or under-scoped, run "
+            "`running-pipeline authorize` to re-authorize."
+        ) from exc
+    except psycopg.OperationalError as exc:
+        raise click.ClickException(
+            f"Could not reach Postgres: {exc}\nStart it with `make up`."
+        ) from exc
+
+    outcome = "stopped early at the rate limit" if report.stopped_early else "complete"
+    click.echo(
+        f"Segment-effort backfill {outcome}: eligible={report.eligible} "
+        f"succeeded={report.succeeded} unavailable={report.unavailable} "
+        f"failed={report.failed} efforts_stored={report.efforts_stored} "
+        f"last_processed="
         f"{report.last_processed_id if report.last_processed_id is not None else 'none'}"
     )
     if report.stopped_early:
