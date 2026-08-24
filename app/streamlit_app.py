@@ -1,4 +1,4 @@
-"""Thin presentation layer: four views under D19's cap of five (amended
+"""Thin presentation layer: five views under D19's cap of five (amended
 v2.0), reading ONLY the approved mart tables. No business logic here — every
 metric, threshold, flag, and exclusion is computed in dbt; this file
 selects, charts, and explains. Sample counts and data sufficiency are
@@ -60,9 +60,9 @@ def week_axis(week_dates) -> alt.Axis:
 # mart_band_weekly is deliberately absent: the weekly band statistics
 # travel inside mart_band_trend (v1.4); mart_run_band_segments is the
 # band chart's run-level scatter (v1.6). Every addition is proven red
-# first — one name per revision through v1.6, then exactly the two
-# cycling marts in v2.0 Phase C1 (amended D19 names all three; the
-# third arrives with Phase C2).
+# first — one name per revision through v1.6, the two cycling marts in
+# v2.0 Phase C1, and mart_segment_trend in Phase C2, completing amended
+# D19's list of exactly three.
 ANALYTICS_TABLES = (
     "mart_weekly_training",
     "mart_efficiency_trend",
@@ -74,6 +74,7 @@ ANALYTICS_TABLES = (
     "mart_run_band_segments",
     "mart_weekly_cycling",
     "mart_ride_quality",
+    "mart_segment_trend",
 )
 
 OBSERVATIONAL_NOTE = (
@@ -818,6 +819,209 @@ def cycling_view():
     )
 
 
+# ── View 5: Cycling Segments (v2.0 Phase C2) ──────────────────────────
+
+# The rolling 5-effort median is a window-grain statistic (the v1.6.1
+# doctrine, effort edition): a vertex needs its own window to hold this
+# many efforts (rolling_effort_count). Unlike the calendar-keyed band
+# chart, an effort-ordered series has no gaps — support never drops
+# once reached — so the line simply STARTS here; the band chart's
+# day-gap break rule does not transfer and no path breaks exist.
+ROLLING_LINE_MIN_WINDOW_EFFORTS = 2
+
+SEGMENT_TREND_DISPLAY = [
+    "start_date_local",
+    "effort_seq",
+    "elapsed_time_s",
+    "moving_time_s",
+    "rolling_median_elapsed_s",
+    "rolling_effort_count",
+    "best_elapsed_s",
+    "average_hr_bpm",
+    "average_cadence_rpm",
+    "pr_rank",
+    "ride_is_valid",
+    "ride_exclusion_reason",
+    "temperature_f",
+]
+
+SEGMENT_TREND_COLUMNS = {
+    "start_date_local": st.column_config.DateColumn("Effort", format="MMM D"),
+    "effort_seq": st.column_config.NumberColumn("#"),
+    "elapsed_time_s": st.column_config.NumberColumn("Elapsed (s)", format="%.0f"),
+    "moving_time_s": st.column_config.NumberColumn("Moving (s)", format="%.0f"),
+    "rolling_median_elapsed_s": st.column_config.NumberColumn(
+        "Rolling median (s)", format="%.1f"
+    ),
+    "rolling_effort_count": st.column_config.NumberColumn("Window (n)"),
+    "best_elapsed_s": st.column_config.NumberColumn("Best so far (s)", format="%.0f"),
+    "average_hr_bpm": st.column_config.NumberColumn("Avg HR", format="%.0f"),
+    "average_cadence_rpm": st.column_config.NumberColumn("Cadence (rpm)", format="%.0f"),
+    "pr_rank": st.column_config.NumberColumn("PR rank"),
+    "ride_is_valid": st.column_config.CheckboxColumn("Ride valid"),
+    "ride_exclusion_reason": st.column_config.TextColumn("Ride exclusion reason"),
+    "temperature_f": st.column_config.NumberColumn("Air °F", format="%.1f"),
+}
+
+
+def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
+    """The one-segment effort-trend layers: cumulative-best reference
+    under hollow effort points under the rolling-median line.
+
+    Extracted from the view (the band_chart precedent) so the exact
+    shipped spec can be rendered headlessly (chart.save → PNG).
+    """
+    efforts = efforts.sort_values("effort_seq").copy()
+    efforts["average_hr_bpm_display"] = format_tooltip_1dp(efforts["average_hr_bpm"])
+    efforts["average_cadence_rpm_display"] = format_tooltip_1dp(efforts["average_cadence_rpm"])
+    efforts["temperature_f_display"] = format_tooltip_1dp(efforts["temperature_f"])
+    # Parent-ride validity is a per-point caveat (never a filter): the
+    # tooltip carries the D25 reason, — when the ride is valid.
+    efforts["ride_exclusion_reason_display"] = efforts["ride_exclusion_reason"].fillna("—")
+
+    # The SAME axis and title go to every layer, or Vega-Lite
+    # concatenates the merged axis titles. Natural y in seconds — the
+    # drift-view precedent for lower-is-better values; a reversed
+    # elapsed axis would chart faster efforts higher and read as times
+    # growing. The caption states the convention.
+    x = alt.X("start_date_local:T", title="effort date", axis=DAY_AXIS, scale=TIME_X_SCALE)
+    y_scale = alt.Scale(zero=False, nice=True)
+    y_title = "effort time (s) — lower is faster"
+
+    best_line = (
+        alt.Chart(efforts)
+        .mark_line(color=GRAY, strokeDash=[4, 3], strokeWidth=1.5, interpolate="step-after")
+        .encode(
+            x=x,
+            y=alt.Y("best_elapsed_s:Q", title=y_title, scale=y_scale),
+            tooltip=[
+                alt.Tooltip("start_date_local:T", title="effort", format="%b %d"),
+                alt.Tooltip("best_elapsed_s:Q", title="best so far (s)", format=".0f"),
+            ],
+        )
+    )
+    points = (
+        alt.Chart(efforts)
+        .mark_point(filled=False, size=30, strokeWidth=1.2, opacity=0.6, color=BLUE)
+        .encode(
+            x=x,
+            y=alt.Y("elapsed_time_s:Q", title=y_title, scale=y_scale),
+            tooltip=[
+                alt.Tooltip("start_date_local:T", title="effort", format="%b %d"),
+                alt.Tooltip("elapsed_time_s:Q", title="elapsed (s)", format=".0f"),
+                alt.Tooltip("moving_time_s:Q", title="moving (s)", format=".0f"),
+                alt.Tooltip("average_hr_bpm_display:N", title="avg HR"),
+                alt.Tooltip("average_cadence_rpm_display:N", title="cadence (rpm)"),
+                alt.Tooltip("temperature_f_display:N", title="air °F"),
+                alt.Tooltip("ride_exclusion_reason_display:N", title="ride exclusion"),
+            ],
+        )
+    )
+    line_frame = efforts[efforts["rolling_effort_count"] >= ROLLING_LINE_MIN_WINDOW_EFFORTS]
+    rolling_line = (
+        alt.Chart(line_frame)
+        .mark_line(color=BLUE, strokeWidth=2, point=alt.OverlayMarkDef(color=BLUE, size=36))
+        .encode(
+            x=x,
+            y=alt.Y("rolling_median_elapsed_s:Q", title=y_title, scale=y_scale),
+            tooltip=[
+                alt.Tooltip("start_date_local:T", title="effort", format="%b %d"),
+                alt.Tooltip("rolling_median_elapsed_s:Q", title="rolling median (s)", format=".1f"),
+                alt.Tooltip("rolling_effort_count:Q", title="efforts in window (n)"),
+            ],
+        )
+    )
+    return alt.layer(best_line, points, rolling_line).properties(height=320)
+
+
+def segments_view():
+    st.header("Cycling segments")
+    st.caption(
+        "Per-segment effort trend (D28): elapsed time on a fixed Strava "
+        "segment, holding the course constant so effort time at comparable "
+        "heart rate is the controlled cycling signal. Lower = faster. "
+        + OBSERVATIONAL_NOTE
+    )
+
+    trend = load("mart_segment_trend")
+    if trend.empty:
+        st.info("No segment efforts yet — run `make sync-segment-efforts` then `make dbt-build`.")
+        return
+
+    segments = trend.drop_duplicates("segment_id")
+    sufficient = segments[segments["is_sufficient"].astype(bool)]
+    if sufficient.empty:
+        st.info(
+            "Trend display needs a segment with at least 5 efforts (D28); "
+            f"none of the {len(segments)} tracked segments is there yet. "
+            "Every effort already counts toward its segment's total."
+        )
+        return
+
+    # Picker limited to sufficient segments (D28's display gate) —
+    # presence-driven options, never a hardcoded name list.
+    options = sufficient.sort_values(["segment_name", "segment_id"]).copy()
+    duplicate_names = options["segment_name"].duplicated(keep=False)
+    options["label"] = options["segment_name"].where(
+        ~duplicate_names,
+        options["segment_name"] + " #" + options["segment_id"].astype(int).astype(str),
+    )
+    choice = st.selectbox("Segment (≥ 5 efforts)", options["label"].tolist())
+    selected = options.set_index("label").loc[choice]
+    hidden_count = len(segments) - len(sufficient)
+    if hidden_count:
+        st.caption(
+            f"{hidden_count} tracked segment(s) under 5 efforts are not offered "
+            "here yet — their efforts still count and the segment appears at 5."
+        )
+
+    efforts = (
+        trend[trend["segment_id"] == selected["segment_id"]].sort_values("effort_seq").copy()
+    )
+    row = efforts.iloc[-1]
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Efforts", int(row["effort_count"]))
+    col2.metric("Best time", f"{int(row['best_elapsed_s'])} s")
+    col3.metric("Rolling median", f"{float(row['rolling_median_elapsed_s']):.1f} s")
+    col4.metric("VirtualRide excluded", int(row["virtual_effort_count"]))
+
+    if bool(row["short_segment"]):
+        st.caption(
+            "Short segment: the median effort is under 120 s, where ±1 s GPS "
+            "sampling is material (D28) — read small changes skeptically. "
+            "Flagged, never excluded."
+        )
+
+    st.altair_chart(themed(segment_chart(efforts)), width="stretch")
+    invalid_count = int((~efforts["ride_is_valid"].astype(bool)).sum())
+    st.caption(
+        f"One hollow point per effort — {len(efforts)} shown; "
+        f"{int(row['virtual_effort_count'])} VirtualRide effort(s) on this "
+        "segment are excluded from every number here (D28). The blue line is "
+        "the rolling median of the last 5 efforts, drawn once the window "
+        f"holds at least {ROLLING_LINE_MIN_WINDOW_EFFORTS}; the dashed gray "
+        "step is the cumulative best."
+        + (
+            f" {invalid_count} effort(s) come from rides failing D25 sanity "
+            "checks — suspect times, shown with their reason, never dropped."
+            if invalid_count
+            else ""
+        )
+    )
+
+    st.dataframe(
+        efforts[SEGMENT_TREND_DISPLAY],
+        width="stretch",
+        hide_index=True,
+        column_config=SEGMENT_TREND_COLUMNS,
+    )
+    st.caption(
+        "Every non-virtual effort on the selected segment, with the parent "
+        "ride's D25 verdict and matched weather. Heart rate, cadence, and "
+        "PR rank stay blank — never zero — when unrecorded."
+    )
+
+
 # ── Shell ─────────────────────────────────────────────────────────────
 
 
@@ -829,6 +1033,7 @@ def main():
         "Weekly training": weekly_view,
         "Cardiac drift": drift_view,
         "Cycling training": cycling_view,
+        "Cycling segments": segments_view,
     }
     choice = st.sidebar.radio("View", list(views))
     st.sidebar.caption(

@@ -90,7 +90,7 @@ dbt-dag: dbt-profile       ## regenerate manifest and embed the dbt DAG in READM
 	$(DBT) parse --profiles-dir .
 	$(VENV)/python -m running_pipeline.dbt_dag --update-readme
 
-app:           ## launch the Streamlit dashboard (four views, marts only)
+app:           ## launch the Streamlit dashboard (five views, marts only)
 	$(VENV)/streamlit run app/streamlit_app.py
 
 airflow-install:   ## create ~/.venvs/airflow + apache-airflow (official constraints)
