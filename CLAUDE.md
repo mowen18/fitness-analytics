@@ -155,8 +155,39 @@
   assert_fct_rides_excludes_ebike_types (red-proven by injection).
   Running output proven byte-identical: 13-relation ordered-CSV
   snapshot diffed interim (post-sync, pre-dbt) and final — both
-  empty; ride weather sync inserted 624 rows, updated 0. C2 (segment
-  efforts) NOT started.
+  empty; ride weather sync inserted 624 rows, updated 0.
+- Phase C2 implemented (2026-08-24, branch c2-segment-efforts — not
+  yet merged; Release 2.0 completes once the live backfill drains).
+  D24 ingestion: per-ride detail fetch (include_all_efforts=true)
+  into raw_strava.activity_details (status rows success/failed/
+  unavailable, absent = not attempted; status rows ARE the resume
+  mechanism — NO watermark: the C2 plan bullet's "sync-state
+  watermark" was a drafting error, fixed in PROJECT_PLAN.md) +
+  segment_efforts (effort_id PK) + segments (last-write-wins summary
+  upsert), one commit per activity. Batch cap
+  SEGMENT_FETCH_MAX_ACTIVITIES_PER_RUN (50, selection-time), exit-3
+  contract, sync-segment-efforts CLI/Make/DAG task (parity-pinned).
+  dbt: stg_strava__segment_efforts + stg_strava__segments →
+  int_segment_efforts (inner join int_ride_measures = D23 grain by
+  construction; parent-ride weather + ride_is_valid /
+  ride_exclusion_reason carried as displayed caveats, never filters)
+  → fct_segment_efforts (VirtualRide kept + flagged; relationships
+  pin to fct_rides red-proven by injected orphan) →
+  mart_segment_trend (segment × non-virtual effort: rolling 5-effort
+  median, cumulative best, is_sufficient ≥ 5, short_segment on
+  strict < 120 s median elapsed, virtual_effort_count for the view
+  caption — the D19 allow-list route). Vars
+  segment_rolling_effort_window / segment_trend_min_efforts /
+  short_segment_seconds (D28 names verbatim); no layer-matrix
+  change. App: fifth view "Cycling segments" (picker limited to
+  sufficient segments; the rolling line STARTS at
+  ROLLING_LINE_MIN_WINDOW_EFFORTS = 2 — effort-ordered series have
+  no calendar gaps, so no path breaks); allow-list +1 red-first
+  (MART_TABLES pin and VIEW_NAMES render both proven red). Running
+  output byte-identical via the 13-relation ordered-CSV snapshot
+  diff. Owner's post-merge steps: live `make sync-segment-efforts`
+  backfill + the Strava My Results spot check (criterion 2). C3 NOT
+  started.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and
@@ -216,7 +247,7 @@
   the example, reads .env; metric thresholds are dbt vars in
   dbt_project.yml; layers map to the D3 schemas via the
   generate_schema_name override — do not remove it)
-- App:     `make app` (Streamlit, four views under D19's amended cap
+- App:     `make app` (Streamlit, five views under D19's amended cap
   of five) / `make all`
   (every sync + dbt build)
 - Airflow: `make airflow-install` (separate venv at ~/.venvs/airflow —

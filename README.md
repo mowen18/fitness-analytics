@@ -14,18 +14,20 @@ metrics, tests, and docs — the dashboard is a thin cap.
 * Is cardiac drift decreasing during longer runs?
 * How is weekly volume changing alongside these efficiency measures?
 * On fixed segments, is ride effort time at comparable heart rate
-  improving? (cycling — the data layer arrives with Phase C2)
+  improving? (cycling)
 
 **Full spec:** [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) (decisions
 D1–D30 are locked, revisable only by recorded addendum; the plan's
 Revisions section and [docs/decisions/](docs/decisions/) record every
 change, v1.1 through v2.0).
 **Status:** running domain complete — Phases 0–6 plus revisions through
-v1.9 implemented and verified. Cycling domain (v2.0): Phase C1 merged —
-rides core models, weekly cycling marts, and the Cycling training view,
-with running output proven byte-identical. Next: Phase C2 (segment
-efforts, completing Release 2.0), then C3 (wind-direction and headwind
-context, Release 2.1).
+v1.9 implemented and verified. Cycling domain (v2.0): Phases C1 and C2
+implemented — rides core models, segment-effort ingestion (D24), the
+D28 segment trend mart, and the Cycling training + Cycling segments
+views, with running output proven byte-identical at each phase.
+Release 2.0 completes once the live `make sync-segment-efforts`
+backfill drains. Next: C3 (wind-direction and headwind context,
+Release 2.1).
 
 ## Architecture
 
@@ -107,7 +109,8 @@ make backfill-coordinates # resolve activity-start coordinates (payload, else po
 make sync-weather     # fetch hourly weather for outdoor runs and rides not yet covered
 make reconcile-weather # re-fetch weather even for already-cached hours
 make sync-streams     # backfill activity streams for fetch-eligible runs
-make app              # launch the Streamlit dashboard (four views)
+make sync-segment-efforts # backfill segment efforts for D23 rides (detail fetches)
+make app              # launch the Streamlit dashboard (five views)
 make all              # full refresh: every sync, then dbt build
 make dbt-build        # build all dbt models and run their tests
 make dbt-test         # dbt tests only
@@ -469,6 +472,24 @@ Dwell is capped per sample at the drift coverage gap (3 s), and runs
 failing any check carry a deterministic `band_exclusion_reason` through
 `fct_band_candidates` into `mart_run_quality`.
 
+### Segment effort trend (cycling, D28)
+
+The cycling primary question is answered on **fixed Strava segments**:
+the course is held constant, so effort elapsed time at comparable
+heart rate is the controlled analog of the running efficiency metric.
+`mart_segment_trend` has one row per non-virtual effort and carries a
+**rolling median over the last 5 efforts** (`segment_rolling_effort_window`)
+plus the cumulative best. Trend display requires **≥ 5 efforts** on the
+segment (`segment_trend_min_efforts`, the D12 spirit); segments whose
+median effort is **under 120 s** (`short_segment_seconds`) carry a
+displayed `short_segment` noise flag — ±1 s GPS sampling is material
+at that length — but are never excluded. Efforts from `VirtualRide`
+activities are flagged in core and held out of segment marts (D28),
+reported per segment as `virtual_effort_count`; a parent ride failing
+D25's sanity checks marks its efforts with the ride's exclusion reason
+as a displayed caveat, never a filter. No power fields are modeled
+anywhere in the chain (D27): estimated watts stay raw-JSONB-only.
+
 ## Stream ingestion and cardiac drift
 
 `make sync-streams` backfills time-series streams (time, heart rate,
@@ -513,17 +534,22 @@ deleted.
 
 ## Dashboard
 
-`make app` serves four Streamlit views under decision D19's cap of
+`make app` serves five Streamlit views under decision D19's cap of
 five (amended by revision v2.0): **Aerobic Efficiency** (weekly +
 28-day rolling trend, temperature-band comparison, and the D22
 pace-at-HR-band section — the same analytical question with intensity
 controlled by construction, so it lives inside this view), **Weekly
 Training** (mileage, moving time, run counts), **Cardiac Drift**
-(run-level decoupling with the rolling trend), and **Cycling
+(run-level decoupling with the rolling trend), **Cycling
 Training** (v2.0 Phase C1: weekly ride volume with median/mean speed,
 cadence, heart-rate, and temperature context; ride validity is D25's
 data-validity rules only — no intensity gating, and heart rate is
-never required for a ride to count). The app is deliberately thin: it
+never required for a ride to count), and **Cycling Segments** (v2.0
+Phase C2: per-segment effort trend — efforts as points, the rolling
+5-effort median as the only statistic line, cumulative best as a
+reference, a picker limited to ≥ 5-effort segments, and the
+short-segment, VirtualRide-exclusion, and ride-validity caveats
+displayed). The app is deliberately thin: it
 reads **only the approved mart tables** — enforced by an explicit
 table-level allow-list in the app code plus a test that pins the list's
 exact contents and refuses any other relation, core facts included
@@ -535,7 +561,9 @@ count are flagged `is_sufficient = false` and excluded from trend lines
 (the pace-at-HR-band chart instead plots every run×band median as a
 faint point from `mart_run_band_segments`, v1.6, under a rolling line
 whose vertices are sufficient weeks only), but stay visible in every
-table; and each empty view explains exactly what data would populate
+table; the segments view captions how many VirtualRide efforts were
+held out (D28) and how many tracked segments sit below the 5-effort
+gate; and each empty view explains exactly what data would populate
 it.
 
 ## Data-quality principles
@@ -577,6 +605,16 @@ it.
   so that band only ever contains extreme-heat runs that were
   completed. Its n=0/n=1 is the finding — never a fair efficiency
   comparison against the cooler bands.
+* **Short segments are noise-flagged, not excluded** (v2.0/D28):
+  where a segment's median effort is under 120 s, ±1 s GPS sampling is
+  a material share of the measurement, so its trend carries a
+  displayed `short_segment` caveat. Small changes there describe
+  sampling as much as fitness.
+* **VirtualRide efforts never reach segment marts** (D28): the
+  simulated course makes times incomparable with outdoor efforts on
+  the same segment. They stay in `fct_segment_efforts`, flagged, and
+  the segments view captions how many were held out — excluded from
+  statistics, never silently absent.
 * The **dashboard screenshots** in `images/` are still pending capture
   now that the marts are populated. (dbt lineage is rendered directly
   in this README via `make dbt-dag`.)
