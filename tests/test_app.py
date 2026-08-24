@@ -21,6 +21,8 @@ import streamlit as st
 from test_dbt_models import (
     db,  # noqa: F401 — shared truncating fixture
     drift_run,
+    insert_segment,
+    insert_segment_effort,
     insert_stream,
     outdoor_ride,
     run_dbt,
@@ -29,15 +31,21 @@ from test_dbt_models import (
 
 APP_PATH = Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py"
 TEST_DB = "running_analytics_test"
-VIEW_NAMES = ["Aerobic efficiency", "Weekly training", "Cardiac drift", "Cycling training"]
+VIEW_NAMES = [
+    "Aerobic efficiency",
+    "Weekly training",
+    "Cardiac drift",
+    "Cycling training",
+    "Cycling segments",
+]
 
 # The approved marts — D19 allows nothing else. Deliberately NOT the
 # whole mart layer: mart_band_weekly stays out because the weekly band
 # statistics travel inside mart_band_trend (v1.4), while
 # mart_run_band_segments is the band chart's run-level scatter (v1.6).
 # Every addition is proven red first — one name per revision through
-# v1.6, then exactly the two cycling marts in v2.0 Phase C1 (amended
-# D19 names all three; mart_segment_trend arrives with Phase C2).
+# v1.6, the two cycling marts in v2.0 Phase C1, and mart_segment_trend
+# in Phase C2, completing amended D19's list of exactly three.
 MART_TABLES = frozenset(
     {
         "mart_weekly_training",
@@ -50,6 +58,7 @@ MART_TABLES = frozenset(
         "mart_run_band_segments",
         "mart_weekly_cycling",
         "mart_ride_quality",
+        "mart_segment_trend",
     }
 )
 
@@ -187,3 +196,34 @@ def test_every_view_renders_with_populated_marts(db):  # noqa: F811
     assert len(efficiency.dataframe) >= 3
     # The D22 sign convention must be stated on the view itself too.
     assert any("falling min/mi" in c.value for c in efficiency.caption)
+
+
+@pytest.mark.integration
+def test_segment_view_gates_picker_and_captions_exclusions(db):  # noqa: F811
+    # C2 acceptance criteria 3 and 4 at the view layer: the picker
+    # offers only >= 5-effort segments, the short-segment caveat
+    # renders, and the excluded-VirtualRide count appears in the
+    # sample caption (readable from mart_segment_trend alone — D19).
+    outdoor_ride(db, 61, day="2026-06-15", hr=140)
+    outdoor_ride(db, 62, day="2026-06-16", sport_type="VirtualRide")
+    insert_segment(db, 601, name="Sufficient Sprint")
+    insert_segment(db, 602, name="Sparse Hill")
+    for n, elapsed in enumerate([100, 101, 99, 100, 102]):  # median 100 s: short
+        insert_segment_effort(
+            db, 6010 + n, 61, 601, elapsed=elapsed, start=f"2026-06-15T09:{20 + n:02d}:00Z"
+        )
+    insert_segment_effort(db, 6021, 61, 602, elapsed=300, start="2026-06-15T10:30:00Z")
+    insert_segment_effort(db, 6025, 62, 601, elapsed=95, start="2026-06-16T09:20:00Z")
+    db.commit()
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    at = render("Cycling segments")
+    assert not at.exception, f"Cycling segments raised: {at.exception}"
+    options = at.selectbox[0].options
+    assert "Sufficient Sprint" in options
+    assert all("Sparse Hill" not in option for option in options)  # 1 effort: not offered
+    captions = " ".join(c.value for c in at.caption)
+    assert "1 VirtualRide effort(s)" in captions  # criterion 4: counted, not silent
+    assert "Short segment" in captions  # criterion 3: the caveat renders
+    assert "Lower = faster" in captions  # the sign convention is stated on the view

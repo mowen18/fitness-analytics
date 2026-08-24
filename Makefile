@@ -24,6 +24,7 @@ AIRFLOW_ENV := PATH=$(AIRFLOW_VENV)/bin:$$PATH \
 
 .PHONY: help up down bootstrap athlete authorize sync-activities reconcile \
 	backfill-coordinates sync-weather reconcile-weather sync-streams \
+	sync-segment-efforts \
 	dbt-profile dbt-build dbt-test dbt-freshness dbt-docs dbt-dag app all \
 	test test-app lint format airflow-install airflow-start
 
@@ -67,6 +68,9 @@ reconcile-weather:  ## re-fetch weather even for already-cached hours
 sync-streams:  ## backfill activity streams for fetch-eligible runs (resumable)
 	$(VENV)/running-pipeline sync-streams
 
+sync-segment-efforts:  ## backfill segment efforts for D23 rides (resumable)
+	$(VENV)/running-pipeline sync-segment-efforts
+
 dbt-profile:   ## create dbt/profiles.yml from the example if absent
 	@test -f dbt/profiles.yml || cp dbt/profiles.yml.example dbt/profiles.yml
 
@@ -86,7 +90,7 @@ dbt-dag: dbt-profile       ## regenerate manifest and embed the dbt DAG in READM
 	$(DBT) parse --profiles-dir .
 	$(VENV)/python -m running_pipeline.dbt_dag --update-readme
 
-app:           ## launch the Streamlit dashboard (four views, marts only)
+app:           ## launch the Streamlit dashboard (five views, marts only)
 	$(VENV)/streamlit run app/streamlit_app.py
 
 airflow-install:   ## create ~/.venvs/airflow + apache-airflow (official constraints)
@@ -104,7 +108,7 @@ airflow-install:   ## create ~/.venvs/airflow + apache-airflow (official constra
 airflow-start:     ## airflow standalone (AIRFLOW_HOME=~/airflow, DAGs from orchestration/dags)
 	$(AIRFLOW_ENV) $(AIRFLOW_VENV)/bin/airflow standalone
 
-all: sync-activities backfill-coordinates sync-weather sync-streams dbt-build  ## full refresh: all syncs + dbt
+all: sync-activities backfill-coordinates sync-weather sync-streams sync-segment-efforts dbt-build  ## full refresh: all syncs + dbt
 
 test:
 	$(VENV)/pytest

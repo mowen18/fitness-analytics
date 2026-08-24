@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Coordinate backfill (map-privacy polyline fallback)
     coordinate_max_activities_per_run: int = 100
 
+    # Segment-effort ingestion (D24, Phase C2)
+    segment_fetch_max_activities_per_run: int = 50
+
     token_file: Path = DEFAULT_TOKEN_FILE
 
 

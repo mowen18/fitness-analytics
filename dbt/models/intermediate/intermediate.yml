@@ -310,3 +310,37 @@ models:
                   - 'average HR outside 90–200 bpm sanity band'
                   - 'average speed outside 3–35 mph bounds'
                   - 'moving time under 15 minutes'
+
+  - name: int_segment_efforts
+    description: >
+      One row per Strava segment effort on a D23 ride (v2.0 Phase C2,
+      D24) — the effort-level context layer: staged effort + its
+      segment's identity + the parent ride's calendar, validity, and
+      matched weather from int_ride_measures. The INNER join applies
+      the D23 grain by construction; raw efforts whose parent ride
+      later leaves the grain (e.g. a sport_type edited in Strava after
+      the detail fetch) drop via that join — a grain rule, not an
+      exclusion needing a reason. is_virtual_ride encodes D28's mart
+      holdout (VIRTUAL, deliberately not is_indoor: trainer-flagged
+      outdoor ride types keep their efforts in marts). No D25 gating of
+      efforts — ride_is_valid / ride_exclusion_reason are carried as
+      displayed caveats, never filters. Weather column names are kept
+      verbatim from the ride chain so C3's effort-hour wind match can
+      add effort_* columns beside them without renames. Feeds
+      fct_segment_efforts, core's explicit-column projection.
+    columns:
+      - name: effort_id
+        description: Strava segment-effort id (one row per effort).
+        tests: [unique, not_null]
+      - name: is_virtual_ride
+        description: >
+          Parent ride sport_type = 'VirtualRide' — the D28 holdout flag
+          (efforts kept in core, excluded from segment marts).
+        tests: [not_null]
+      - name: ride_is_valid
+        description: Parent ride's D25 verdict, as displayed context.
+        tests: [not_null]
+      - name: ride_exclusion_reason
+        description: >
+          Parent ride's first failing D25 rule; NULL when the ride is
+          valid. A caveat on the effort's times, never a filter.

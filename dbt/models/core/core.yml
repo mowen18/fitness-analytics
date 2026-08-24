@@ -276,3 +276,41 @@ models:
       - name: fetched_at
         description: Raw ingestion timestamp carried from the source row.
         tests: [not_null]
+
+  - name: fct_segment_efforts
+    description: >
+      One row per Strava segment effort on a D23 ride — the mart-facing
+      effort-level contract (v2.0 Phase C2), a pure explicit-column
+      projection of int_segment_efforts (the fct_rides pattern:
+      computation upstream, stable named surface here so marts read
+      core only). VirtualRide efforts are present and flagged — D28
+      excludes them from marts, not from core; the holdout is pinned by
+      assert_segment_trend_excludes_virtual_efforts. No power columns
+      exist anywhere in this chain (D27).
+    columns:
+      - name: effort_id
+        description: Strava segment-effort id (one row per effort).
+        tests: [unique, not_null]
+      - name: activity_id
+        description: Parent D23 ride.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_rides')
+                field: activity_id
+      - name: segment_id
+        description: Strava segment id.
+        tests: [not_null]
+      - name: elapsed_time_s
+        description: Effort elapsed time, seconds (D28's primary series).
+        tests: [not_null]
+      - name: is_virtual_ride
+        description: D28 holdout flag — kept here, excluded from marts.
+        tests: [not_null]
+      - name: ride_is_valid
+        description: Parent ride's D25 verdict (context, never a filter).
+        tests: [not_null]
+      - name: weather_available
+        description: Parent ride's weather match within 60 minutes.
+        tests: [not_null]

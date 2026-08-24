@@ -173,3 +173,55 @@ models:
       - name: fetched_at
         description: When ingestion last wrote this row.
         tests: [not_null]
+
+  - name: stg_strava__segment_efforts
+    description: >
+      One row per Strava segment effort (v2.0 Phase C2, D24), typed out
+      of the raw payload. "Segment" here means a STRAVA segment — a
+      fixed stretch of road — never the run x HR-band "band segment" of
+      the D22 chain. No ride-grain filter is applied here (the D23
+      grain is applied in int_segment_efforts, the staging-stays-
+      faithful rule); missing HR, cadence, and pr_rank stay NULL, never
+      zero.
+    columns:
+      - name: effort_id
+        description: Strava segment-effort id.
+        tests: [unique, not_null]
+      - name: activity_id
+        description: Parent activity id.
+        tests: [not_null]
+      - name: segment_id
+        description: Strava segment id.
+        tests: [not_null]
+      - name: elapsed_time_s
+        description: Effort elapsed time, seconds — D28's primary series.
+        tests: [not_null]
+      - name: moving_time_s
+        description: Effort moving time, seconds (secondary).
+      - name: average_hr_bpm
+        description: Average HR over the effort; NULL when not recorded.
+      - name: average_cadence_rpm
+        description: Average crank rpm over the effort (D26); NULL when absent.
+      - name: pr_rank
+        description: Strava top-3 PR rank; NULL means "not a PR", never 0.
+
+  - name: stg_strava__segments
+    description: >
+      One row per Strava segment (v2.0 Phase C2, D24): identity and
+      geometry typed from the newest nested summary. The start/end
+      coordinates are deliberately staging-only — fuel for the C3
+      bearing and sinuosity work, never surfaced in core, marts, or the
+      app.
+    columns:
+      - name: segment_id
+        description: Strava segment id.
+        tests: [unique, not_null]
+      - name: segment_name
+        description: Segment name as shown on Strava.
+      - name: distance_m
+        description: Segment length, meters.
+        tests:
+          - accepted_range:
+              arguments: {min_value: 0}
+      - name: average_grade_pct
+        description: Average grade, percent.

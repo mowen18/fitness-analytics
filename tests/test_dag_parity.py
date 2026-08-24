@@ -26,6 +26,7 @@ SYNC_TASKS = {
     "backfill_coordinates": "backfill-coordinates",
     "sync_weather": "sync-weather",
     "sync_streams": "sync-streams",
+    "sync_segment_efforts": "sync-segment-efforts",
 }
 
 
