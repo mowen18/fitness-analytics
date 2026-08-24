@@ -475,3 +475,77 @@ models:
           indoor / a D14 seed band label (by apparent temperature) /
           weather unavailable — always present.
         tests: [not_null]
+
+  - name: mart_segment_trend
+    description: >
+      One row per NON-virtual segment effort (Strava segment x effort
+      grain) — the D28 trend mart and the only cycling-segment relation
+      on the D19 allow-list (v2.0 Phase C2). Primary series: elapsed
+      time; moving time secondary. rolling_median_elapsed_s covers the
+      last segment_rolling_effort_window efforts (rolling_effort_count
+      is that window's support; static names per v1.3); best_elapsed_s
+      is the cumulative best so far. effort_count / effort_seq / the
+      rolling window / the best count NON-virtual efforts only —
+      sufficiency is the minimum sample of the DISPLAYED statistic (the
+      D12 spirit; a deliberate reading of D28's "5 total efforts").
+      VirtualRide efforts are absent by construction (pinned by
+      assert_segment_trend_excludes_virtual_efforts, red-proven by
+      injection) and reported per segment as virtual_effort_count so
+      the view can caption the exclusion. short_segment and the parent
+      ride's ride_is_valid / ride_exclusion_reason are displayed
+      caveats, never filters. Weather context is the PARENT RIDE's
+      matched observation; C3 adds the effort-hour wind match as new
+      columns.
+    columns:
+      - name: effort_id
+        description: Strava segment-effort id (one row per non-virtual effort).
+        tests: [unique, not_null]
+      - name: segment_id
+        description: Strava segment id.
+        tests: [not_null]
+      - name: effort_seq
+        description: 1-based order of this effort within its segment (by start time).
+        tests: [not_null]
+      - name: elapsed_time_s
+        description: This effort's elapsed time, seconds — lower is faster.
+        tests: [not_null]
+      - name: rolling_median_elapsed_s
+        description: >
+          Median elapsed time over the last segment_rolling_effort_window
+          efforts ending here (1 dp). The var changes the window, never
+          the column name (v1.3).
+        tests: [not_null]
+      - name: rolling_effort_count
+        description: Efforts inside this row's rolling window (window support).
+        tests: [not_null]
+      - name: best_elapsed_s
+        description: Cumulative best elapsed time through this effort.
+        tests: [not_null]
+      - name: effort_count
+        description: Non-virtual efforts on this segment (the sufficiency sample).
+        tests: [not_null]
+      - name: is_sufficient
+        description: >
+          effort_count meets segment_trend_min_efforts — the trend
+          display gate (D28); guarded by
+          assert_segment_trend_sufficiency_matches_threshold.
+        tests: [not_null]
+      - name: short_segment
+        description: >
+          Per-segment median elapsed time strictly under
+          short_segment_seconds: ±1 s GPS sampling is material at that
+          length. A displayed caveat, never a filter; guarded by
+          assert_segment_trend_short_flag_matches_threshold.
+        tests: [not_null]
+      - name: virtual_effort_count
+        description: >
+          VirtualRide efforts on this segment held out of this mart
+          (D28) — 0 when none; the view's exclusion caption reads this.
+        tests: [not_null]
+      - name: ride_is_valid
+        description: Parent ride's D25 verdict (displayed caveat).
+        tests: [not_null]
+      - name: ride_exclusion_reason
+        description: >
+          Parent ride's first failing D25 rule; NULL when valid. Shown
+          per point — suspect effort times stay visible, never dropped.

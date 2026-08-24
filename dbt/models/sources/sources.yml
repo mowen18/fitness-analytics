@@ -62,6 +62,61 @@ sources:
               - not_null
               - accepted_values:
                   arguments: {values: [success, failed, unavailable]}
+      - name: activity_details
+        description: >
+          One row per attempted activity-detail fetch (Phase C2, D24:
+          GET /activities/{id}?include_all_efforts=true, D23 rides
+          only). success = full DetailedActivity stored and its efforts
+          extracted; unavailable = the activity no longer exists on
+          Strava (terminal); failed = transient error, retried by the
+          next run. An absent row means not yet attempted — the status
+          rows are the resumability mechanism; there is no watermark.
+          Estimated power lives only inside this payload, modeled
+          nowhere (D27).
+        columns:
+          - name: activity_id
+            description: Strava activity id (one attempt row per activity).
+            tests: [unique, not_null]
+          - name: ingestion_status
+            description: success / failed / unavailable (CHECK-constrained).
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments: {values: [success, failed, unavailable]}
+      - name: segment_efforts
+        description: >
+          One row per Strava segment effort (Phase C2, D24), extracted
+          from the parent ride's detail payload in the same transaction
+          as its status row and upserted by effort_id — re-fetching a
+          ride replaces its efforts in place, so re-runs never
+          duplicate.
+        columns:
+          - name: effort_id
+            description: Strava segment-effort id (primary key).
+            tests: [unique, not_null]
+          - name: activity_id
+            description: Parent activity id.
+            tests: [not_null]
+          - name: segment_id
+            description: Strava segment id.
+            tests: [not_null]
+          - name: payload
+            description: >
+              Full DetailedSegmentEffort JSON, nested segment summary
+              included.
+            tests: [not_null]
+      - name: segments
+        description: >
+          One row per Strava segment (Phase C2, D24), upserted from the
+          summary nested in each effort. Shared across activities; last
+          write wins — the newest fetch's summary replaces the payload.
+        columns:
+          - name: segment_id
+            description: Strava segment id (primary key).
+            tests: [unique, not_null]
+          - name: payload
+            description: Nested segment summary JSON from the newest fetch.
+            tests: [not_null]
 
   - name: raw_weather
     description: >

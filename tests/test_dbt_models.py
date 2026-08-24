@@ -34,7 +34,9 @@ TEST_DB = "running_analytics_test"  # the conftest scratch database
 def db(integration_db):
     integration_db.execute(
         "TRUNCATE raw_strava.activities, raw_strava.streams, "
-        "raw_strava.activity_coordinates, raw_weather.hourly"
+        "raw_strava.activity_coordinates, raw_weather.hourly, "
+        "raw_strava.activity_details, raw_strava.segment_efforts, "
+        "raw_strava.segments"
     )
     integration_db.commit()
     return integration_db
@@ -1057,3 +1059,201 @@ def test_ebike_pin_test_fails_on_injected_ebike_row(db):
 
     result = run_dbt("test", "--select", selector)
     assert result.returncode == 0, f"e-bike pin still failing:\n{result.stdout}"
+
+
+# ── Cycling segments (v2.0 Phase C2): D24 chain, D28 trend mart ───────
+
+
+def insert_segment(db, segment_id, *, name=None, distance=1200.0):
+    payload = {
+        "id": segment_id,
+        "name": name or f"Segment {segment_id}",
+        "distance": distance,
+        "average_grade": 1.4,
+        "maximum_grade": 6.0,
+        "city": "Testville",
+        "state": "TS",
+        "start_latlng": [12.34, -56.78],
+        "end_latlng": [12.35, -56.79],
+    }
+    db.execute(
+        "INSERT INTO raw_strava.segments (segment_id, payload, fetched_at)"
+        " VALUES (%s, %s, now())",
+        (segment_id, json.dumps(payload)),
+    )
+
+
+def insert_segment_effort(
+    db, effort_id, activity_id, segment_id, *, elapsed, start, hr=None, cadence=None, pr_rank=None
+):
+    payload = {
+        "id": effort_id,
+        "elapsed_time": elapsed,
+        "moving_time": elapsed,
+        "start_date": start,
+        "start_date_local": start,
+        "average_heartrate": hr,
+        "average_cadence": cadence,
+        "pr_rank": pr_rank,
+    }
+    db.execute(
+        "INSERT INTO raw_strava.segment_efforts"
+        " (effort_id, activity_id, segment_id, payload, fetched_at)"
+        " VALUES (%s, %s, %s, %s, now())",
+        (effort_id, activity_id, segment_id, json.dumps(payload)),
+    )
+
+
+@pytest.mark.integration
+def test_segment_sufficiency_flips_at_five_efforts(db):
+    # C2 acceptance criterion 3, mart side: is_sufficient flips exactly
+    # at segment_trend_min_efforts (5); the rolling median and the
+    # cumulative best are pinned to hand-checked values.
+    outdoor_ride(db, 201, day="2026-06-15", hr=140)
+    insert_segment(db, 501, name="Four Efforts")
+    insert_segment(db, 502, name="Five Efforts")
+    for n in range(4):
+        insert_segment_effort(
+            db, 5010 + n, 201, 501, elapsed=300, start=f"2026-06-15T09:{20 + n:02d}:00Z"
+        )
+    for n, elapsed in enumerate([210, 200, 190, 220, 180]):
+        insert_segment_effort(
+            db, 5020 + n, 201, 502, elapsed=elapsed, start=f"2026-06-15T10:{10 + n:02d}:00Z"
+        )
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    rows = {
+        row[0]: row[1:]
+        for row in db.execute(
+            "SELECT effort_id, effort_seq, effort_count, is_sufficient,"
+            "       rolling_median_elapsed_s, rolling_effort_count, best_elapsed_s"
+            "  FROM analytics.mart_segment_trend"
+        ).fetchall()
+    }
+    assert len(rows) == 9
+    assert rows[5010] == (1, 4, False, Decimal("300.0"), 1, 300)  # 4 efforts: insufficient
+    assert rows[5023] == (4, 5, True, Decimal("205.0"), 4, 190)  # window {210,200,190,220}
+    # Fifth effort: full 5-effort window {210,200,190,220,180} -> 200.0;
+    # cumulative best falls to 180.
+    assert rows[5024] == (5, 5, True, Decimal("200.0"), 5, 180)
+
+
+@pytest.mark.integration
+def test_short_segment_flag_flips_at_median_120s(db):
+    # C2 acceptance criterion 3, caveat side: short_segment flips
+    # exactly at short_segment_seconds (120), strict < — a median of
+    # exactly 120 is NOT short.
+    outdoor_ride(db, 211, day="2026-06-15", hr=140)
+    insert_segment(db, 503, name="Median 119")
+    insert_segment(db, 504, name="Median 120")
+    insert_segment_effort(db, 5031, 211, 503, elapsed=118, start="2026-06-15T09:20:00Z")
+    insert_segment_effort(db, 5032, 211, 503, elapsed=120, start="2026-06-15T09:25:00Z")
+    insert_segment_effort(db, 5041, 211, 504, elapsed=119, start="2026-06-15T09:30:00Z")
+    insert_segment_effort(db, 5042, 211, 504, elapsed=121, start="2026-06-15T09:35:00Z")
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    flags = {
+        row[0]: row[1]
+        for row in db.execute(
+            "SELECT segment_id, bool_and(short_segment) FROM analytics.mart_segment_trend"
+            " GROUP BY segment_id"
+        ).fetchall()
+    }
+    assert flags == {503: True, 504: False}
+
+
+@pytest.mark.integration
+def test_virtual_effort_flagged_in_core_absent_from_mart_and_counted(db):
+    # C2 acceptance criterion 4: a VirtualRide effort is flagged in
+    # fct_segment_efforts, absent from mart_segment_trend, counted in
+    # virtual_effort_count, and excluded from every displayed statistic.
+    # A trainer-flagged OUTDOOR ride's effort stays in the mart: the
+    # holdout is virtual, deliberately not is_indoor.
+    outdoor_ride(db, 221, day="2026-06-15", hr=140)
+    outdoor_ride(db, 222, day="2026-06-16", sport_type="VirtualRide")
+    outdoor_ride(db, 223, day="2026-06-17", trainer=True)
+    insert_segment(db, 505, name="Shared Hill")
+    insert_segment_effort(db, 2211, 221, 505, elapsed=200, start="2026-06-15T09:20:00Z")
+    insert_segment_effort(db, 2212, 221, 505, elapsed=210, start="2026-06-15T09:40:00Z")
+    insert_segment_effort(db, 2221, 222, 505, elapsed=150, start="2026-06-16T09:20:00Z")
+    insert_segment_effort(db, 2231, 223, 505, elapsed=220, start="2026-06-17T09:20:00Z")
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    core = {
+        row[0]: row[1]
+        for row in db.execute(
+            "SELECT effort_id, is_virtual_ride FROM analytics.fct_segment_efforts"
+        ).fetchall()
+    }
+    assert core == {2211: False, 2212: False, 2221: True, 2231: False}
+
+    mart = {
+        row[0]: row[1:]
+        for row in db.execute(
+            "SELECT effort_id, effort_seq, effort_count, virtual_effort_count, best_elapsed_s"
+            "  FROM analytics.mart_segment_trend"
+        ).fetchall()
+    }
+    assert set(mart) == {2211, 2212, 2231}  # the virtual effort is absent
+    assert mart[2211] == (1, 3, 1, 200)
+    # The virtual effort's faster 150 s must never become the best, and
+    # the trainer-outdoor effort takes seq 3.
+    assert mart[2231] == (3, 3, 1, 200)
+
+
+@pytest.mark.integration
+def test_segment_pin_tests_fail_on_injected_rows(db):
+    # The two NEW cross-relation pins, proven red the injection way (the
+    # e-bike archetype above): the mart's virtual holdout and the
+    # fct_segment_efforts -> fct_rides relationships test. Both are
+    # unreachable from raw fixtures — the models enforce them by
+    # construction — so the violating rows are injected into the built
+    # tables.
+    outdoor_ride(db, 231, day="2026-06-15", hr=140)
+    outdoor_ride(db, 232, day="2026-06-16", sport_type="VirtualRide")
+    insert_segment(db, 506)
+    insert_segment_effort(db, 2311, 231, 506, elapsed=200, start="2026-06-15T09:20:00Z")
+    insert_segment_effort(db, 2321, 232, 506, elapsed=150, start="2026-06-16T09:20:00Z")
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    # Pin 1: a virtual-flagged effort injected into the mart.
+    db.execute(
+        "INSERT INTO analytics.mart_segment_trend (effort_id, segment_id) VALUES (2321, 506)"
+    )
+    db.commit()
+    selector = "assert_segment_trend_excludes_virtual_efforts"
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode != 0, "virtual holdout pin should fail on an injected virtual row"
+    assert selector in result.stdout
+    db.execute("DELETE FROM analytics.mart_segment_trend WHERE effort_id = 2321")
+    db.commit()
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode == 0, f"virtual holdout pin still failing:\n{result.stdout}"
+
+    # Pin 2: an orphan effort (no parent in fct_rides) injected into core.
+    db.execute(
+        "INSERT INTO analytics.fct_segment_efforts"
+        " (effort_id, activity_id, segment_id, elapsed_time_s, is_virtual_ride,"
+        "  ride_is_valid, weather_available)"
+        " VALUES (999999998, 999999997, 506, 200, false, true, false)"
+    )
+    db.commit()
+    result = run_dbt("test", "--select", "fct_segment_efforts")
+    assert result.returncode != 0, "relationships pin should fail on an orphan activity_id"
+    assert "relationships_fct_segment_efforts" in result.stdout
+    db.execute("DELETE FROM analytics.fct_segment_efforts WHERE effort_id = 999999998")
+    db.commit()
+    result = run_dbt("test", "--select", "fct_segment_efforts")
+    assert result.returncode == 0, f"fct_segment_efforts tests still failing:\n{result.stdout}"

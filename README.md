@@ -218,6 +218,9 @@ flowchart LR
     subgraph sources["Sources"]
         source_running_analytics_raw_strava_activities[("raw_strava.activities")]
         source_running_analytics_raw_strava_activity_coordinates[("raw_strava.activity_coordinates")]
+        source_running_analytics_raw_strava_activity_details[("raw_strava.activity_details")]
+        source_running_analytics_raw_strava_segment_efforts[("raw_strava.segment_efforts")]
+        source_running_analytics_raw_strava_segments[("raw_strava.segments")]
         source_running_analytics_raw_strava_streams[("raw_strava.streams")]
         source_running_analytics_raw_strava_sync_state[("raw_strava.sync_state")]
         source_running_analytics_raw_weather_hourly[("raw_weather.hourly")]
@@ -230,6 +233,8 @@ flowchart LR
 
     subgraph staging["Staging"]
         model_running_analytics_stg_strava__activities["stg_strava__activities"]
+        model_running_analytics_stg_strava__segment_efforts["stg_strava__segment_efforts"]
+        model_running_analytics_stg_strava__segments["stg_strava__segments"]
         model_running_analytics_stg_weather__hourly["stg_weather__hourly"]
     end
 
@@ -242,6 +247,7 @@ flowchart LR
         model_running_analytics_int_run_stream_samples["int_run_stream_samples"]
         model_running_analytics_int_run_stream_state["int_run_stream_state"]
         model_running_analytics_int_runs_with_weather["int_runs_with_weather"]
+        model_running_analytics_int_segment_efforts["int_segment_efforts"]
     end
 
     subgraph core["Core"]
@@ -250,6 +256,7 @@ flowchart LR
         model_running_analytics_fct_rides["fct_rides"]
         model_running_analytics_fct_run_band_segments["fct_run_band_segments"]
         model_running_analytics_fct_runs["fct_runs"]
+        model_running_analytics_fct_segment_efforts["fct_segment_efforts"]
     end
 
     subgraph marts["Marts"]
@@ -262,6 +269,7 @@ flowchart LR
         model_running_analytics_mart_run_band_segments["mart_run_band_segments"]
         model_running_analytics_mart_run_drift["mart_run_drift"]
         model_running_analytics_mart_run_quality["mart_run_quality"]
+        model_running_analytics_mart_segment_trend["mart_segment_trend"]
         model_running_analytics_mart_weekly_cycling["mart_weekly_cycling"]
         model_running_analytics_mart_weekly_training["mart_weekly_training"]
     end
@@ -280,9 +288,11 @@ flowchart LR
     model_running_analytics_fct_runs --> model_running_analytics_mart_run_drift
     model_running_analytics_fct_runs --> model_running_analytics_mart_run_quality
     model_running_analytics_fct_runs --> model_running_analytics_mart_weekly_training
+    model_running_analytics_fct_segment_efforts --> model_running_analytics_mart_segment_trend
     model_running_analytics_int_band_window_samples --> model_running_analytics_fct_run_band_segments
     model_running_analytics_int_band_window_samples --> model_running_analytics_int_run_band_assessment
     model_running_analytics_int_ride_measures --> model_running_analytics_fct_rides
+    model_running_analytics_int_ride_measures --> model_running_analytics_int_segment_efforts
     model_running_analytics_int_rides_with_weather --> model_running_analytics_int_ride_measures
     model_running_analytics_int_run_band_assessment --> model_running_analytics_fct_band_candidates
     model_running_analytics_int_run_band_assessment --> model_running_analytics_fct_run_band_segments
@@ -295,11 +305,14 @@ flowchart LR
     model_running_analytics_int_run_stream_state --> model_running_analytics_fct_drift_candidates
     model_running_analytics_int_run_stream_state --> model_running_analytics_int_run_band_assessment
     model_running_analytics_int_runs_with_weather --> model_running_analytics_int_run_efficiency
+    model_running_analytics_int_segment_efforts --> model_running_analytics_fct_segment_efforts
     model_running_analytics_mart_band_weekly --> model_running_analytics_mart_band_trend
     model_running_analytics_mart_run_drift --> model_running_analytics_mart_drift_trend
     model_running_analytics_mart_weekly_training --> model_running_analytics_mart_efficiency_trend
     model_running_analytics_stg_strava__activities --> model_running_analytics_int_rides_with_weather
     model_running_analytics_stg_strava__activities --> model_running_analytics_int_runs_with_weather
+    model_running_analytics_stg_strava__segment_efforts --> model_running_analytics_int_segment_efforts
+    model_running_analytics_stg_strava__segments --> model_running_analytics_int_segment_efforts
     model_running_analytics_stg_weather__hourly --> model_running_analytics_int_rides_with_weather
     model_running_analytics_stg_weather__hourly --> model_running_analytics_int_runs_with_weather
     seed_running_analytics_hr_bands --> model_running_analytics_int_band_window_samples
@@ -310,6 +323,8 @@ flowchart LR
     seed_running_analytics_temperature_bands --> model_running_analytics_mart_run_quality
     source_running_analytics_raw_strava_activities --> model_running_analytics_stg_strava__activities
     source_running_analytics_raw_strava_activity_coordinates --> model_running_analytics_stg_strava__activities
+    source_running_analytics_raw_strava_segment_efforts --> model_running_analytics_stg_strava__segment_efforts
+    source_running_analytics_raw_strava_segments --> model_running_analytics_stg_strava__segments
     source_running_analytics_raw_strava_streams --> model_running_analytics_int_run_stream_samples
     source_running_analytics_raw_strava_streams --> model_running_analytics_int_run_stream_state
     source_running_analytics_raw_weather_hourly --> model_running_analytics_stg_weather__hourly

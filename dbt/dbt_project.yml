@@ -56,6 +56,14 @@ vars:
   ride_speed_mph_floor: 3
   ride_speed_mph_ceiling: 35
   min_weekly_valid_rides: 2
+  # Cycling segments, Phase C2 (D28: rolling 5-effort median, >= 5
+  # efforts for trend display, < 120 s median = short-segment noise
+  # flag). Names follow the D28 decision record verbatim —
+  # short_segment_seconds deliberately keeps the recorded spelling
+  # over the _s suffix convention.
+  segment_rolling_effort_window: 5
+  segment_trend_min_efforts: 5
+  short_segment_seconds: 120
 
 # Layers map onto the five locked schemas (D3). generate_schema_name is
 # overridden so these names are used exactly, without dbt's default
