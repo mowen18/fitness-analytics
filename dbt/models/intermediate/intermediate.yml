@@ -311,6 +311,47 @@ models:
                   - 'average speed outside 3–35 mph bounds'
                   - 'moving time under 15 minutes'
 
+  - name: int_segment_geometry
+    description: >
+      One row per Strava segment (v2.0 Phase C3, D30): great-circle
+      initial bearing from the segment's start to end coordinates
+      (staging-only fields of stg_strava__segments), haversine
+      straight-line distance, sinuosity (segment distance / straight
+      line, 4 dp), and winding_segment — strictly above
+      winding_sinuosity_max (a sinuosity of exactly the bound is NOT
+      winding; guarded by
+      assert_segment_geometry_winding_matches_threshold). The flag is
+      a displayed caveat — the straight-line bearing misdescribes a
+      winding course — never a filter. Unknown geometry (missing or
+      identical endpoints, where bearing is undefined and the
+      sinuosity division impossible) stays NULL, never false.
+    columns:
+      - name: segment_id
+        description: Strava segment id (one row per segment).
+        tests: [unique, not_null]
+      - name: bearing_deg
+        description: >
+          Great-circle initial bearing start → end, degrees (0 =
+          north, 1 dp); NULL when endpoints are missing or identical
+          (Postgres answers atan2(0, 0) with 0, which would silently
+          claim due north — hence the explicit guard).
+        tests:
+          - accepted_range:
+              arguments: {min_value: 0, max_value: 360}
+      - name: straight_line_m
+        description: >
+          Haversine start-to-end distance, meters, unrounded (IUGG
+          mean radius 6371008.8 m, pinned in the haversine_meters
+          macro). Intermediate-only fuel for sinuosity.
+      - name: sinuosity
+        description: >
+          distance_m / straight_line_m, 4 dp; NULL when the straight
+          line is zero or unknown.
+      - name: winding_segment
+        description: >
+          sinuosity strictly above winding_sinuosity_max (D30); NULL
+          when geometry is unknown — missing is not "not winding".
+
   - name: int_segment_efforts
     description: >
       One row per Strava segment effort on a D23 ride (v2.0 Phase C2,
@@ -325,9 +366,16 @@ models:
       outdoor ride types keep their efforts in marts). No D25 gating of
       efforts — ride_is_valid / ride_exclusion_reason are carried as
       displayed caveats, never filters. Weather column names are kept
-      verbatim from the ride chain so C3's effort-hour wind match can
-      add effort_* columns beside them without renames. Feeds
-      fct_segment_efforts, core's explicit-column projection.
+      verbatim from the ride chain; C3 (D30) added its effort_* wind
+      columns beside them exactly as reserved — segment geometry from
+      int_segment_geometry, plus the effort-hour wind match: nearest
+      qualifying observation at the parent ride's start cell to the
+      EFFORT's start time (60-minute rule; deterministic tie-break, a
+      deliberate deviation from the ride model's unspecified — and
+      frozen — tie order), and the D30 headwind/crosswind computed
+      where speed, direction, and bearing all exist (positive =
+      headwind, the pinned sign). Feeds fct_segment_efforts, core's
+      explicit-column projection.
     columns:
       - name: effort_id
         description: Strava segment-effort id (one row per effort).

@@ -167,6 +167,17 @@ models:
               arguments: {min_value: 0}
       - name: wind_speed_mph
         description: Wind speed at 10 m, mph (derived; 1 dp).
+      - name: wind_direction_deg
+        description: >
+          Wind direction at 10 m, degrees, meteorological FROM
+          convention (D29, C3): 0 legitimately means north — a value,
+          never a stand-in for missing; NULL means the archive had no
+          direction for this hour. Deliberately not part of
+          has_measurements: direction never decides whether an hour
+          counts as an observation.
+        tests:
+          - accepted_range:
+              arguments: {min_value: 0, max_value: 360}
       - name: has_measurements
         description: True when at least one measurement is non-NULL.
         tests: [not_null]

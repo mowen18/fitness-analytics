@@ -12,6 +12,7 @@ All coordinates are deliberately fake.
 """
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -110,12 +111,23 @@ def insert_activity(
     )
 
 
-def insert_weather(conn, *, hour, temperature, location="12.34_-56.78", apparent="same"):
+def insert_weather(
+    conn,
+    *,
+    hour,
+    temperature,
+    location="12.34_-56.78",
+    apparent="same",
+    wind_kph=None,
+    wind_direction=None,
+):
     # apparent="same" mirrors temperature (None stays all-NULL: the
     # missing-marker rows must stay missing in every measurement).
     # Passing apparent=None with a real temperature builds the partial
     # observation the v1.7 ladder must not drop: matched weather, no
-    # feels-like value.
+    # feels-like value. wind_kph/wind_direction (C3, D29/D30) default to
+    # NULL so every pre-C3 call site stays byte-identical; direction 0.0
+    # is a value (north), never collapsed to missing.
     if apparent == "same":
         apparent = temperature
     lat, lon = (Decimal(part) for part in location.split("_"))
@@ -123,8 +135,9 @@ def insert_weather(conn, *, hour, temperature, location="12.34_-56.78", apparent
         """
         INSERT INTO raw_weather.hourly
             (location_key, latitude, longitude, weather_timestamp, temperature_c,
-             apparent_temperature_c, relative_humidity_pct, payload, fetched_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+             apparent_temperature_c, relative_humidity_pct, wind_speed_kph,
+             wind_direction_deg, payload, fetched_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
         """,
         (
             location,
@@ -134,6 +147,8 @@ def insert_weather(conn, *, hour, temperature, location="12.34_-56.78", apparent
             temperature,
             apparent,
             None if temperature is None else 55,
+            wind_kph,
+            wind_direction,
             json.dumps({"time": hour}),
         ),
     )
@@ -1064,7 +1079,11 @@ def test_ebike_pin_test_fails_on_injected_ebike_row(db):
 # ── Cycling segments (v2.0 Phase C2): D24 chain, D28 trend mart ───────
 
 
-def insert_segment(db, segment_id, *, name=None, distance=1200.0):
+def insert_segment(
+    db, segment_id, *, name=None, distance=1200.0, start_latlng="default", end_latlng="default"
+):
+    # Endpoint kwargs (C3, D30): "default" keeps the C2 fixture cell;
+    # None omits the key entirely (a Strava payload without endpoints).
     payload = {
         "id": segment_id,
         "name": name or f"Segment {segment_id}",
@@ -1073,12 +1092,17 @@ def insert_segment(db, segment_id, *, name=None, distance=1200.0):
         "maximum_grade": 6.0,
         "city": "Testville",
         "state": "TS",
-        "start_latlng": [12.34, -56.78],
-        "end_latlng": [12.35, -56.79],
     }
+    if start_latlng == "default":
+        start_latlng = [12.34, -56.78]
+    if end_latlng == "default":
+        end_latlng = [12.35, -56.79]
+    if start_latlng is not None:
+        payload["start_latlng"] = start_latlng
+    if end_latlng is not None:
+        payload["end_latlng"] = end_latlng
     db.execute(
-        "INSERT INTO raw_strava.segments (segment_id, payload, fetched_at)"
-        " VALUES (%s, %s, now())",
+        "INSERT INTO raw_strava.segments (segment_id, payload, fetched_at) VALUES (%s, %s, now())",
         (segment_id, json.dumps(payload)),
     )
 
@@ -1257,3 +1281,268 @@ def test_segment_pin_tests_fail_on_injected_rows(db):
     db.commit()
     result = run_dbt("test", "--select", "fct_segment_efforts")
     assert result.returncode == 0, f"fct_segment_efforts tests still failing:\n{result.stdout}"
+
+
+# ── Wind direction and headwind (v2.0 Phase C3): D29/D30 ──────────────
+
+# The same IUGG mean radius the haversine_meters macro pins; the tests
+# hand-compute expectations with it so a constant drift surfaces here.
+EARTH_RADIUS_M = 6371008.8
+
+
+def haversine_m(lat1, lon1, lat2, lon2):
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    half_dphi = math.radians(lat2 - lat1) / 2
+    half_dlmb = math.radians(lon2 - lon1) / 2
+    chord = math.sin(half_dphi) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(half_dlmb) ** 2
+    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(chord))
+
+
+@pytest.mark.integration
+def test_winding_flag_flips_exactly_at_sinuosity_threshold(db):
+    # C3 acceptance criterion 3, plus the D30 bearing pins: the
+    # winding_segment flag flips exactly at winding_sinuosity_max (1.3),
+    # strict > — D30 says "above", so a sinuosity of exactly 1.3000 is
+    # NOT winding (the short_segment strict-< precedent, mirrored).
+    # Bearings hand-checked: due north = 0, reversed = 180, and due east
+    # ON THE EQUATOR = 90 (at any other latitude an east-pointing
+    # segment's initial great-circle bearing is not exactly 90). A
+    # 0.01°-latitude segment is R·0.01·π/180 ≈ 1111.95 m straight-line.
+    north = haversine_m(12.34, -56.78, 12.35, -56.78)
+    north_ends = {"start_latlng": [12.34, -56.78], "end_latlng": [12.35, -56.78]}
+    insert_segment(db, 601, name="At The Bound", distance=round(1.3 * north, 3), **north_ends)
+    insert_segment(db, 602, name="Just Above", distance=round(1.31 * north, 3), **north_ends)
+    insert_segment(
+        db,
+        603,
+        name="Southbound",
+        start_latlng=[12.35, -56.78],
+        end_latlng=[12.34, -56.78],
+    )
+    insert_segment(db, 604, name="Equator East", start_latlng=[0.0, 10.00], end_latlng=[0.0, 10.01])
+    # Identical endpoints: zero straight-line, so bearing is undefined —
+    # an unguarded atan2(0,0) would silently claim due north — and the
+    # sinuosity division cannot happen. Unknown geometry stays NULL,
+    # never false (missing-never-zero).
+    insert_segment(db, 605, name="Loop", start_latlng=[12.34, -56.78], end_latlng=[12.34, -56.78])
+    insert_segment(db, 606, name="No Endpoints", start_latlng=None, end_latlng=None)
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    rows = {
+        row[0]: row[1:]
+        for row in db.execute(
+            "SELECT segment_id, bearing_deg, straight_line_m, sinuosity, winding_segment"
+            "  FROM intermediate.int_segment_geometry"
+        ).fetchall()
+    }
+    assert len(rows) == 6
+
+    bearing, straight, sinuosity, winding = rows[601]
+    assert float(bearing) == pytest.approx(0.0, abs=0.01)
+    assert float(straight) == pytest.approx(1111.95, abs=0.01)
+    assert sinuosity == Decimal("1.3000")
+    assert winding is False  # exactly at the bound: NOT winding
+
+    assert rows[602][2] == Decimal("1.3100")
+    assert rows[602][3] is True  # just above the bound: winding
+
+    assert float(rows[603][0]) == pytest.approx(180.0, abs=0.01)
+    assert float(rows[604][0]) == pytest.approx(90.0, abs=0.01)
+
+    loop_bearing, loop_straight, loop_sinuosity, loop_winding = rows[605]
+    assert (loop_bearing, loop_sinuosity, loop_winding) == (None, None, None)
+    assert float(loop_straight) == pytest.approx(0.0, abs=1e-9)
+
+    assert rows[606] == (None, None, None, None)
+
+
+@pytest.mark.integration
+def test_headwind_sign_convention_and_effort_hour_match(db):
+    # C3 acceptance criterion 1 (the D30 sign matrix, v2.0 verification
+    # item 7 verbatim) plus the effort-hour wind match rules. Wind speed
+    # is 16.09344 kph = exactly 10.0 mph on northbound segments
+    # (bearing 0), so:
+    #   wind FROM 0° (north)  -> headwind +10.0, crosswind 0.0 — and the
+    #                            0° fixture doubles as the dbt-tier
+    #                            "0 is a value" pin;
+    #   wind FROM 180° (south)-> headwind -10.0 (tailwind), crosswind 0;
+    #   wind FROM 90° (east)  -> headwind 0.0, crosswind 10.0 (full).
+    # The wind is matched at the parent ride's start CELL but the
+    # EFFORT's start time: the ride here matches the 09:00 observation
+    # (direction 180) while the 11:40 effort matches 12:00 (direction
+    # 0) — proving the effort-hour path is not the ride's. Beyond 60
+    # minutes every effort_wind_* value is NULL; a matched hour with
+    # speed but no direction carries the speed and NULL headwind
+    # (missing direction is never zero). Winding efforts keep their
+    # computed headwind — flagged, never nulled (D30).
+    outdoor_ride(db, 241, day="2026-06-15", hr=140)
+    north = haversine_m(12.34, -56.78, 12.35, -56.78)
+    north_ends = {"start_latlng": [12.34, -56.78], "end_latlng": [12.35, -56.78]}
+    insert_segment(db, 611, name="Northbound Straight", distance=1200.0, **north_ends)
+    insert_segment(
+        db, 612, name="Northbound Winding", distance=round(1.31 * north, 3), **north_ends
+    )
+    wind = {"wind_kph": 16.09344}
+    insert_weather(
+        db, hour="2026-06-15T09:00:00+00:00", temperature=20.0, wind_direction=180.0, **wind
+    )
+    insert_weather(
+        db, hour="2026-06-15T12:00:00+00:00", temperature=21.0, wind_direction=0.0, **wind
+    )
+    insert_weather(
+        db, hour="2026-06-15T14:00:00+00:00", temperature=22.0, wind_direction=90.0, **wind
+    )
+    insert_weather(
+        db, hour="2026-06-15T18:00:00+00:00", temperature=23.0, wind_direction=None, **wind
+    )
+    insert_segment_effort(db, 2411, 241, 611, elapsed=200, start="2026-06-15T09:20:00Z")
+    insert_segment_effort(db, 2412, 241, 611, elapsed=210, start="2026-06-15T11:40:00Z")
+    insert_segment_effort(db, 2413, 241, 611, elapsed=220, start="2026-06-15T13:40:00Z")
+    insert_segment_effort(db, 2414, 241, 611, elapsed=230, start="2026-06-15T16:30:00Z")
+    insert_segment_effort(db, 2415, 241, 611, elapsed=240, start="2026-06-15T17:40:00Z")
+    insert_segment_effort(db, 2416, 241, 612, elapsed=250, start="2026-06-15T09:25:00Z")
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    core = {
+        row[0]: row[1:]
+        for row in db.execute(
+            "SELECT effort_id, bearing_deg, winding_segment, effort_wind_speed_mph,"
+            "       effort_wind_direction_deg, effort_wind_match_minutes,"
+            "       headwind_mph, crosswind_mph, weather_match_minutes"
+            "  FROM analytics.fct_segment_efforts"
+        ).fetchall()
+    }
+    assert len(core) == 6
+
+    # Tailwind from due south; the ride itself matched the same 09:00
+    # observation (15 minutes from its 09:15 start).
+    assert core[2411] == (
+        Decimal("0.0"),
+        False,
+        Decimal("10.0"),
+        Decimal("180"),
+        20,
+        Decimal("-10.0"),
+        Decimal("0.0"),
+        15,
+    )
+    # Effort-hour, not ride-hour: direction 0 from the 12:00 observation
+    # while the parent ride's own match stays the 09:00 hour. 0° = north
+    # is a value and yields the full positive headwind.
+    assert core[2412] == (
+        Decimal("0.0"),
+        False,
+        Decimal("10.0"),
+        Decimal("0"),
+        20,
+        Decimal("10.0"),
+        Decimal("0.0"),
+        15,
+    )
+    # Crosswind from due east: zero headwind, full crosswind.
+    assert core[2413] == (
+        Decimal("0.0"),
+        False,
+        Decimal("10.0"),
+        Decimal("90"),
+        20,
+        Decimal("0.0"),
+        Decimal("10.0"),
+        15,
+    )
+    # Nearest observation 90 minutes away: beyond the 60-minute rule,
+    # every effort-wind value is NULL (the match distance is context).
+    assert core[2414] == (Decimal("0.0"), False, None, None, 90, None, None, 15)
+    # Matched hour has speed but no direction: speed carried, headwind
+    # and crosswind NULL — missing direction is never zero.
+    assert core[2415] == (Decimal("0.0"), False, Decimal("10.0"), None, 20, None, None, 15)
+    # Winding segment: headwind computed AND flagged, never nulled.
+    assert core[2416] == (
+        Decimal("0.0"),
+        True,
+        Decimal("10.0"),
+        Decimal("180"),
+        25,
+        Decimal("-10.0"),
+        Decimal("0.0"),
+        15,
+    )
+
+    # The mart carries exactly the three pinned C3 columns, in lockstep
+    # with core (amended D19: no allow-list change rides on this).
+    mart = {
+        row[0]: row[1:]
+        for row in db.execute(
+            "SELECT effort_id, headwind_mph, crosswind_mph, winding_segment"
+            "  FROM analytics.mart_segment_trend"
+        ).fetchall()
+    }
+    assert mart[2411] == (Decimal("-10.0"), Decimal("0.0"), False)
+    assert mart[2412] == (Decimal("10.0"), Decimal("0.0"), False)
+    assert mart[2414] == (None, None, False)
+    assert mart[2416] == (Decimal("-10.0"), Decimal("0.0"), True)
+
+
+@pytest.mark.integration
+def test_wind_pin_tests_fail_on_injected_rows(db):
+    # The two table-backed C3 pins, proven red the injection way (the
+    # C2 archetype): the D30 formula/null pin on core and the mart-core
+    # lockstep pin. Both are unreachable from raw fixtures — the models
+    # enforce them by construction. The third C3 pin
+    # (assert_segment_geometry_winding_matches_threshold) guards a VIEW,
+    # so its red proof rides the boundary fixtures in
+    # test_winding_flag_flips_exactly_at_sinuosity_threshold instead.
+    outdoor_ride(db, 251, day="2026-06-15", hr=140)
+    insert_segment(db, 507)
+    insert_segment_effort(db, 2511, 251, 507, elapsed=200, start="2026-06-15T09:20:00Z")
+    insert_weather(
+        db,
+        hour="2026-06-15T09:00:00+00:00",
+        temperature=20.0,
+        wind_kph=16.09344,
+        wind_direction=0.0,
+    )
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    # Pin 1: a core row whose stored headwind contradicts the formula.
+    db.execute(
+        "INSERT INTO analytics.fct_segment_efforts"
+        " (effort_id, activity_id, segment_id, elapsed_time_s, is_virtual_ride,"
+        "  ride_is_valid, weather_available, bearing_deg, effort_wind_speed_mph,"
+        "  effort_wind_direction_deg, effort_wind_match_minutes, headwind_mph, crosswind_mph)"
+        " VALUES (999999996, 999999997, 507, 200, false, true, false,"
+        "         0.0, 10.0, 0.0, 20, -5.0, 0.0)"
+    )
+    db.commit()
+    selector = "assert_headwind_matches_formula_and_null_rules"
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode != 0, "headwind formula pin should fail on an injected row"
+    assert selector in result.stdout
+    db.execute("DELETE FROM analytics.fct_segment_efforts WHERE effort_id = 999999996")
+    db.commit()
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode == 0, f"headwind formula pin still failing:\n{result.stdout}"
+
+    # Pin 2: a mart row disagreeing with its core effort's headwind.
+    db.execute(
+        "INSERT INTO analytics.mart_segment_trend (effort_id, segment_id, headwind_mph)"
+        " VALUES (2511, 507, 99.9)"
+    )
+    db.commit()
+    selector = "assert_segment_trend_wind_matches_core"
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode != 0, "mart-core wind lockstep pin should fail on an injected row"
+    assert selector in result.stdout
+    db.execute("DELETE FROM analytics.mart_segment_trend WHERE headwind_mph = 99.9")
+    db.commit()
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode == 0, f"mart-core wind lockstep pin still failing:\n{result.stdout}"

@@ -123,7 +123,18 @@ select
     sequenced.temperature_f,
     sequenced.apparent_temperature_f,
     sequenced.relative_humidity_pct,
-    sequenced.wind_speed_mph
+    sequenced.wind_speed_mph,
+    -- C3 (D30), the exact three columns the phase adds — no allow-list
+    -- change rides on this (amended D19). Sign convention, pinned:
+    -- positive headwind_mph = headwind, negative = tailwind; crosswind
+    -- unsigned. NULL when direction, the 60-minute effort-hour match,
+    -- or the segment bearing is missing; winding_segment is a
+    -- displayed caveat (straight-line bearing misdescribes the
+    -- course), never a filter. Pinned to core by
+    -- assert_segment_trend_wind_matches_core.
+    sequenced.headwind_mph,
+    sequenced.crosswind_mph,
+    sequenced.winding_segment
 from sequenced
 left join segment_stats using (segment_id)
 left join virtual_counts using (segment_id)
