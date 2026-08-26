@@ -275,6 +275,9 @@ def test_segment_view_headwind_context_and_sign_caption(db):  # noqa: F811
     table = at.dataframe[0].value
     assert "headwind_mph" in table.columns
     assert "crosswind_mph" in table.columns
+    # Effort speed (mph, over elapsed time — the Strava segment
+    # convention) reaches the effort table as displayed context.
+    assert "speed_mph" in table.columns
 
 
 @pytest.mark.integration
