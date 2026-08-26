@@ -354,9 +354,7 @@ def efficiency_view():
     # astype(bool): psycopg hands back object dtype on empty frames, and
     # a non-bool mask would select columns instead of rows.
     sufficient = trend[trend["is_sufficient"].astype(bool)].copy()
-    sufficient["avg_temperature_f_display"] = format_tooltip_1dp(
-        sufficient["avg_temperature_f"]
-    )
+    sufficient["avg_temperature_f_display"] = format_tooltip_1dp(sufficient["avg_temperature_f"])
 
     if sufficient["median_efficiency_m_per_beat"].dropna().empty:
         st.info(
@@ -381,9 +379,7 @@ def efficiency_view():
                     ),
                     alt.Tooltip("valid_run_count:Q", title="valid runs (n)"),
                     alt.Tooltip("avg_hr_bpm:Q", title="avg HR (bpm)", format=".0f"),
-                    alt.Tooltip(
-                        "avg_temperature_f_display:N", title="avg air temp (°F)"
-                    ),
+                    alt.Tooltip("avg_temperature_f_display:N", title="avg air temp (°F)"),
                 ],
             )
             .properties(height=320)
@@ -450,9 +446,7 @@ def efficiency_view():
             .mark_text(align="left", dx=6, color=INK_SECONDARY)
             .encode(y=band_y, x=alt.X("label_x:Q"), text="n_label:N")
         )
-        st.altair_chart(
-            themed(alt.layer(bars, labels).properties(height=266)), width="stretch"
-        )
+        st.altair_chart(themed(alt.layer(bars, labels).properties(height=266)), width="stretch")
         st.caption(
             "Median of per-run efficiency across runs with valid HR data in "
             "each band — runs are banded individually by their own matched "
@@ -517,9 +511,7 @@ def efficiency_view():
 
     st.subheader("Every run, with its verdict")
     quality = load("mart_run_quality").sort_values("start_date_local", ascending=False)
-    st.dataframe(
-        quality, width="stretch", hide_index=True, column_config=RUN_QUALITY_COLUMNS
-    )
+    st.dataframe(quality, width="stretch", hide_index=True, column_config=RUN_QUALITY_COLUMNS)
     st.caption(
         "Efficiency is computed for every heart-rate-carrying run; the trend "
         "and band charts aggregate every run with VALID heart-rate data (D9 "
@@ -528,9 +520,7 @@ def efficiency_view():
         "column shows the effort mix behind each aggregate."
     )
 
-    st.dataframe(
-        trend, width="stretch", hide_index=True, column_config=EFFICIENCY_TREND_COLUMNS
-    )
+    st.dataframe(trend, width="stretch", hide_index=True, column_config=EFFICIENCY_TREND_COLUMNS)
     st.caption("All weeks, including insufficient ones — nothing is dropped, only flagged.")
 
 
@@ -691,9 +681,7 @@ def drift_view():
                 "segment once a second sufficient week exists."
             )
 
-    st.dataframe(
-        trend, width="stretch", hide_index=True, column_config=DRIFT_TREND_COLUMNS
-    )
+    st.dataframe(trend, width="stretch", hide_index=True, column_config=DRIFT_TREND_COLUMNS)
     st.caption("All drift weeks with sample counts; insufficient weeks are flagged, not deleted.")
 
 
@@ -829,6 +817,15 @@ def cycling_view():
 # day-gap break rule does not transfer and no path breaks exist.
 ROLLING_LINE_MIN_WINDOW_EFFORTS = 2
 
+# D30 headwind coloring: the reference palette's diverging pair (blue ↔
+# red with a neutral gray midpoint — two hues, never a hue at zero).
+# Red = positive = headwind (slow days), blue = tailwind; the midpoint
+# deliberately reads as "nothing", so colored points wear a thin gray
+# stroke to stay visible near zero. Direction-free points fall back to
+# plain gray — missing is shown as absent, never as calm.
+HEADWIND_RED = "#e34948"
+DIVERGING_MID = "#f0efec"
+
 SEGMENT_TREND_DISPLAY = [
     "start_date_local",
     "effort_seq",
@@ -843,6 +840,8 @@ SEGMENT_TREND_DISPLAY = [
     "ride_is_valid",
     "ride_exclusion_reason",
     "temperature_f",
+    "headwind_mph",
+    "crosswind_mph",
 ]
 
 SEGMENT_TREND_COLUMNS = {
@@ -850,9 +849,7 @@ SEGMENT_TREND_COLUMNS = {
     "effort_seq": st.column_config.NumberColumn("#"),
     "elapsed_time_s": st.column_config.NumberColumn("Elapsed (s)", format="%.0f"),
     "moving_time_s": st.column_config.NumberColumn("Moving (s)", format="%.0f"),
-    "rolling_median_elapsed_s": st.column_config.NumberColumn(
-        "Rolling median (s)", format="%.1f"
-    ),
+    "rolling_median_elapsed_s": st.column_config.NumberColumn("Rolling median (s)", format="%.1f"),
     "rolling_effort_count": st.column_config.NumberColumn("Window (n)"),
     "best_elapsed_s": st.column_config.NumberColumn("Best so far (s)", format="%.0f"),
     "average_hr_bpm": st.column_config.NumberColumn("Avg HR", format="%.0f"),
@@ -861,12 +858,17 @@ SEGMENT_TREND_COLUMNS = {
     "ride_is_valid": st.column_config.CheckboxColumn("Ride valid"),
     "ride_exclusion_reason": st.column_config.TextColumn("Ride exclusion reason"),
     "temperature_f": st.column_config.NumberColumn("Air °F", format="%.1f"),
+    "headwind_mph": st.column_config.NumberColumn("Headwind (mph)", format="%.1f"),
+    "crosswind_mph": st.column_config.NumberColumn("Crosswind (mph)", format="%.1f"),
 }
 
 
 def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
     """The one-segment effort-trend layers: cumulative-best reference
-    under hollow effort points under the rolling-median line.
+    under the effort points under the rolling-median line. With
+    headwind data (C3, D30) the points are filled and colored on the
+    diverging headwind scale; without any, the exact C2 spec renders —
+    hollow blue points, no color legend, no wind tooltips.
 
     Extracted from the view (the band_chart precedent) so the exact
     shipped spec can be rendered headlessly (chart.save → PNG).
@@ -878,6 +880,15 @@ def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
     # Parent-ride validity is a per-point caveat (never a filter): the
     # tooltip carries the D25 reason, — when the ride is valid.
     efforts["ride_exclusion_reason_display"] = efforts["ride_exclusion_reason"].fillna("—")
+    has_headwind = bool(efforts["headwind_mph"].notna().any())
+    wind_tooltip = []
+    if has_headwind:
+        efforts["headwind_mph_display"] = format_tooltip_1dp(efforts["headwind_mph"])
+        efforts["crosswind_mph_display"] = format_tooltip_1dp(efforts["crosswind_mph"])
+        wind_tooltip = [
+            alt.Tooltip("headwind_mph_display:N", title="headwind (mph, + = headwind)"),
+            alt.Tooltip("crosswind_mph_display:N", title="crosswind (mph)"),
+        ]
 
     # The SAME axis and title go to every layer, or Vega-Lite
     # concatenates the merged axis titles. Natural y in seconds — the
@@ -900,23 +911,53 @@ def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
             ],
         )
     )
-    points = (
-        alt.Chart(efforts)
-        .mark_point(filled=False, size=30, strokeWidth=1.2, opacity=0.6, color=BLUE)
-        .encode(
-            x=x,
-            y=alt.Y("elapsed_time_s:Q", title=y_title, scale=y_scale),
-            tooltip=[
-                alt.Tooltip("start_date_local:T", title="effort", format="%b %d"),
-                alt.Tooltip("elapsed_time_s:Q", title="elapsed (s)", format=".0f"),
-                alt.Tooltip("moving_time_s:Q", title="moving (s)", format=".0f"),
-                alt.Tooltip("average_hr_bpm_display:N", title="avg HR"),
-                alt.Tooltip("average_cadence_rpm_display:N", title="cadence (rpm)"),
-                alt.Tooltip("temperature_f_display:N", title="air °F"),
-                alt.Tooltip("ride_exclusion_reason_display:N", title="ride exclusion"),
-            ],
+    point_tooltip = [
+        alt.Tooltip("start_date_local:T", title="effort", format="%b %d"),
+        alt.Tooltip("elapsed_time_s:Q", title="elapsed (s)", format=".0f"),
+        alt.Tooltip("moving_time_s:Q", title="moving (s)", format=".0f"),
+        alt.Tooltip("average_hr_bpm_display:N", title="avg HR"),
+        alt.Tooltip("average_cadence_rpm_display:N", title="cadence (rpm)"),
+        alt.Tooltip("temperature_f_display:N", title="air °F"),
+        *wind_tooltip,
+        alt.Tooltip("ride_exclusion_reason_display:N", title="ride exclusion"),
+    ]
+    if has_headwind:
+        # Symmetric domain about zero so the neutral midpoint IS zero
+        # headwind; the floor keeps a near-calm day from stretching
+        # faint values into the poles' saturated ends.
+        limit = max(float(efforts["headwind_mph"].abs().max()), 1.0)
+        points = (
+            alt.Chart(efforts)
+            .mark_point(filled=True, size=36, opacity=0.8, stroke=GRAY, strokeWidth=0.5)
+            .encode(
+                x=x,
+                y=alt.Y("elapsed_time_s:Q", title=y_title, scale=y_scale),
+                color=alt.condition(
+                    "isValid(datum.headwind_mph)",
+                    alt.Color(
+                        "headwind_mph:Q",
+                        scale=alt.Scale(
+                            domain=[-limit, 0, limit],
+                            range=[BLUE, DIVERGING_MID, HEADWIND_RED],
+                            interpolate="lab",
+                        ),
+                        legend=alt.Legend(title="headwind (mph)"),
+                    ),
+                    alt.value(GRAY),
+                ),
+                tooltip=point_tooltip,
+            )
         )
-    )
+    else:
+        points = (
+            alt.Chart(efforts)
+            .mark_point(filled=False, size=30, strokeWidth=1.2, opacity=0.6, color=BLUE)
+            .encode(
+                x=x,
+                y=alt.Y("elapsed_time_s:Q", title=y_title, scale=y_scale),
+                tooltip=point_tooltip,
+            )
+        )
     line_frame = efforts[efforts["rolling_effort_count"] >= ROLLING_LINE_MIN_WINDOW_EFFORTS]
     rolling_line = (
         alt.Chart(line_frame)
@@ -939,8 +980,7 @@ def segments_view():
     st.caption(
         "Per-segment effort trend (D28): elapsed time on a fixed Strava "
         "segment, holding the course constant so effort time at comparable "
-        "heart rate is the controlled cycling signal. Lower = faster. "
-        + OBSERVATIONAL_NOTE
+        "heart rate is the controlled cycling signal. Lower = faster. " + OBSERVATIONAL_NOTE
     )
 
     trend = load("mart_segment_trend")
@@ -975,9 +1015,7 @@ def segments_view():
             "here yet — their efforts still count and the segment appears at 5."
         )
 
-    efforts = (
-        trend[trend["segment_id"] == selected["segment_id"]].sort_values("effort_seq").copy()
-    )
+    efforts = trend[trend["segment_id"] == selected["segment_id"]].sort_values("effort_seq").copy()
     row = efforts.iloc[-1]
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Efforts", int(row["effort_count"]))
@@ -992,10 +1030,46 @@ def segments_view():
             "Flagged, never excluded."
         )
 
+    # winding_segment is nullable (unknown geometry stays NULL, never
+    # false) and bool(NaN) is truthy — the pd.isna guard must come
+    # first. The flag is a displayed caveat, never a filter (D30).
+    winding = row["winding_segment"]
+    if not pd.isna(winding) and bool(winding):
+        st.caption(
+            "Winding segment: sinuosity is above 1.3, so the straight-line "
+            "bearing — and the headwind computed from it — misdescribes the "
+            "course (D30). Computed and flagged, never excluded."
+        )
+
+    has_headwind = bool(efforts["headwind_mph"].notna().any())
+    if has_headwind:
+        st.caption(
+            "Headwind context (D30): effort points are colored by the "
+            "headwind component — red = positive = headwind (slows the "
+            "effort), blue = tailwind, gray = no direction for that hour. "
+            "Wind is observed at the parent ride's start cell, not the "
+            "segment's location, matched to each effort's start time within "
+            "60 minutes."
+        )
+    else:
+        # C3 acceptance criterion 5: missing direction degrades to the
+        # C2 chart with an explanation — never a crash, never silent.
+        st.caption(
+            "No wind direction is cached for these efforts yet, so the "
+            "trend shows without headwind context (D29). Run "
+            "`make reconcile-weather` and then `make dbt-build` to "
+            "backfill direction."
+        )
+
     st.altair_chart(themed(segment_chart(efforts)), width="stretch")
     invalid_count = int((~efforts["ride_is_valid"].astype(bool)).sum())
+    point_description = (
+        "One point per effort, colored by headwind"
+        if has_headwind
+        else "One hollow point per effort"
+    )
     st.caption(
-        f"One hollow point per effort — {len(efforts)} shown; "
+        f"{point_description} — {len(efforts)} shown; "
         f"{int(row['virtual_effort_count'])} VirtualRide effort(s) on this "
         "segment are excluded from every number here (D28). The blue line is "
         "the rolling median of the last 5 efforts, drawn once the window "

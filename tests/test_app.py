@@ -21,9 +21,11 @@ import streamlit as st
 from test_dbt_models import (
     db,  # noqa: F401 — shared truncating fixture
     drift_run,
+    haversine_m,
     insert_segment,
     insert_segment_effort,
     insert_stream,
+    insert_weather,
     outdoor_ride,
     run_dbt,
     steady_stream,
@@ -227,3 +229,96 @@ def test_segment_view_gates_picker_and_captions_exclusions(db):  # noqa: F811
     assert "1 VirtualRide effort(s)" in captions  # criterion 4: counted, not silent
     assert "Short segment" in captions  # criterion 3: the caveat renders
     assert "Lower = faster" in captions  # the sign convention is stated on the view
+
+
+def _five_efforts(conn, activity_id, segment_id, first_effort_id):
+    for n, elapsed in enumerate([200, 210, 190, 205, 195]):
+        insert_segment_effort(
+            conn,
+            first_effort_id + n,
+            activity_id,
+            segment_id,
+            elapsed=elapsed,
+            start=f"2026-06-15T09:{20 + n:02d}:00Z",
+        )
+
+
+NORTH_ENDS = {"start_latlng": [12.34, -56.78], "end_latlng": [12.35, -56.78]}
+
+
+@pytest.mark.integration
+def test_segment_view_headwind_context_and_sign_caption(db):  # noqa: F811
+    # C3 (D30) at the view layer: headwind context renders with its
+    # sign convention stated on the view (the D17 idiom) plus the
+    # spatial caveat, headwind and crosswind reach the effort table,
+    # and a straight segment shows NO winding caveat.
+    outdoor_ride(db, 71, day="2026-06-15", hr=140)
+    insert_segment(db, 701, name="Windy Straight", **NORTH_ENDS)
+    _five_efforts(db, 71, 701, 7010)
+    insert_weather(
+        db,
+        hour="2026-06-15T09:00:00+00:00",
+        temperature=20.0,
+        wind_kph=16.09344,
+        wind_direction=0.0,
+    )
+    db.commit()
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    at = render("Cycling segments")
+    assert not at.exception, f"Cycling segments raised: {at.exception}"
+    captions = " ".join(c.value for c in at.caption)
+    assert "positive = headwind" in captions  # the D30 sign, on the view
+    assert "ride's start cell" in captions  # the spatial caveat, displayed
+    assert "Winding segment" not in captions  # straight course: no caveat
+    table = at.dataframe[0].value
+    assert "headwind_mph" in table.columns
+    assert "crosswind_mph" in table.columns
+
+
+@pytest.mark.integration
+def test_segment_view_winding_caption_renders(db):  # noqa: F811
+    # C3 (D30): sinuosity above the var flips the displayed winding
+    # caveat — flagged, never a filter, so everything else still shows.
+    outdoor_ride(db, 72, day="2026-06-15", hr=140)
+    winding_distance = round(1.31 * haversine_m(12.34, -56.78, 12.35, -56.78), 3)
+    insert_segment(db, 702, name="Switchback Hill", distance=winding_distance, **NORTH_ENDS)
+    _five_efforts(db, 72, 702, 7020)
+    insert_weather(
+        db,
+        hour="2026-06-15T09:00:00+00:00",
+        temperature=20.0,
+        wind_kph=16.09344,
+        wind_direction=180.0,
+    )
+    db.commit()
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    at = render("Cycling segments")
+    assert not at.exception, f"Cycling segments raised: {at.exception}"
+    captions = " ".join(c.value for c in at.caption)
+    assert "Winding segment" in captions
+
+
+@pytest.mark.integration
+def test_segment_view_degrades_without_wind_direction(db):  # noqa: F811
+    # C3 acceptance criterion 5: with no wind direction anywhere (the
+    # exact C2 data shape — pre-backfill), the view renders the
+    # existing trend and explains the missing headwind context; never
+    # a crash, never a silent absence.
+    outdoor_ride(db, 73, day="2026-06-15", hr=140)
+    insert_segment(db, 703, name="Directionless")
+    _five_efforts(db, 73, 703, 7030)
+    insert_weather(db, hour="2026-06-15T09:00:00+00:00", temperature=20.0)
+    db.commit()
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    at = render("Cycling segments")
+    assert not at.exception, f"Cycling segments raised: {at.exception}"
+    assert at.selectbox[0].options  # the C2 trend still renders
+    captions = " ".join(c.value for c in at.caption)
+    assert "no wind direction" in captions.lower()
+    assert "reconcile-weather" in captions  # the fix is named, not implied
