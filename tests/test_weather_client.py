@@ -37,6 +37,7 @@ UNITS = {
     "apparent_temperature": "°C",
     "relative_humidity_2m": "%",
     "wind_speed_10m": "km/h",
+    "wind_direction_10m": "°",
 }
 
 
@@ -64,6 +65,7 @@ def archive_payload(times: list[str], **variable_overrides) -> dict:
         "apparent_temperature": [19.0] * count,
         "relative_humidity_2m": [55] * count,
         "wind_speed_10m": [12.3] * count,
+        "wind_direction_10m": [180.0] * count,
     }
     hourly.update(variable_overrides)
     return {"latitude": 12.375, "longitude": -56.75, "hourly_units": UNITS, "hourly": hourly}
@@ -113,7 +115,7 @@ def test_request_carries_utc_timezone_cell_and_variables():
     assert query["end_date"] == ["2026-06-16"]
     assert query["timezone"] == ["UTC"]
     assert query["hourly"] == [
-        "temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m"
+        "temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_direction_10m"
     ]
 
 
@@ -140,6 +142,7 @@ def test_parses_hourly_arrays_into_rows():
     assert first["apparent_temperature_c"] == 19.0
     assert first["relative_humidity_pct"] == 60
     assert first["wind_speed_kph"] == 12.3
+    assert first["wind_direction_deg"] == 180.0
     assert first["fetched_at"] == FETCHED_AT
     assert first["payload"] == {
         "time": "2026-06-15T09:00",
@@ -147,6 +150,7 @@ def test_parses_hourly_arrays_into_rows():
         "apparent_temperature": 19.0,
         "relative_humidity_2m": 60,
         "wind_speed_10m": 12.3,
+        "wind_direction_10m": 180.0,
         "units": UNITS,
     }
     assert rows[1]["weather_timestamp"] == datetime(2026, 6, 15, 10, tzinfo=UTC)
@@ -159,6 +163,7 @@ def test_api_nulls_stay_none_never_zero():
         apparent_temperature=[None],
         relative_humidity_2m=[None],
         wind_speed_10m=[None],
+        wind_direction_10m=[None],
     )
 
     (row,) = parse_hourly_rows(payload, LAT, LON, FETCHED_AT)
@@ -167,7 +172,23 @@ def test_api_nulls_stay_none_never_zero():
     assert row["apparent_temperature_c"] is None
     assert row["relative_humidity_pct"] is None
     assert row["wind_speed_kph"] is None
+    assert row["wind_direction_deg"] is None
     assert row["payload"]["temperature_2m"] is None  # missing preserved as null
+    # The key is present even when null: its presence is the D29 cache
+    # marker for "direction was requested for this hour".
+    assert "wind_direction_10m" in row["payload"]
+    assert row["payload"]["wind_direction_10m"] is None
+
+
+def test_zero_direction_survives_as_zero():
+    # D29: 0° legitimately means "wind from due north" — it must never
+    # collapse into the missing (None) representation.
+    payload = archive_payload(["2026-06-15T09:00"], wind_direction_10m=[0.0])
+
+    (row,) = parse_hourly_rows(payload, LAT, LON, FETCHED_AT)
+
+    assert row["wind_direction_deg"] == 0.0
+    assert row["wind_direction_deg"] is not None
 
 
 # ── Bounded retries and stop conditions ───────────────────────────────

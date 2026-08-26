@@ -58,13 +58,18 @@ class FakeWeatherClient:
 
     `null_times` (ISO-hour strings) come back with null measurements;
     `fail_cells` raise WeatherApiError; `stop_at_call` raises a budget
-    stop on that (1-based) call.
+    stop on that (1-based) call. `wind_direction` adds a
+    wind_direction_10m array (null on `null_times` hours); by default
+    the payload OMITS the array — the shape of an archive response that
+    carries no direction (parse_hourly_rows still records the key as an
+    explicit null, which is the D29 completeness marker).
     """
 
-    def __init__(self, null_times=(), fail_cells=(), stop_at_call=None):
+    def __init__(self, null_times=(), fail_cells=(), stop_at_call=None, wind_direction=None):
         self.null_times = set(null_times)
         self.fail_cells = set(fail_cells)
         self.stop_at_call = stop_at_call
+        self.wind_direction = wind_direction
         self.calls = []
         self.requests_made = 0
 
@@ -82,16 +87,18 @@ class FakeWeatherClient:
             times.extend(f"{day.isoformat()}T{hour:02d}:00" for hour in range(24))
             day += timedelta(days=1)
         measurements = [None if t in self.null_times else 20.5 for t in times]
-        return {
-            "hourly_units": {"temperature_2m": "°C"},
-            "hourly": {
-                "time": times,
-                "temperature_2m": measurements,
-                "apparent_temperature": measurements,
-                "relative_humidity_2m": measurements,
-                "wind_speed_10m": measurements,
-            },
+        hourly = {
+            "time": times,
+            "temperature_2m": measurements,
+            "apparent_temperature": measurements,
+            "relative_humidity_2m": measurements,
+            "wind_speed_10m": measurements,
         }
+        if self.wind_direction is not None:
+            hourly["wind_direction_10m"] = [
+                None if t in self.null_times else self.wind_direction for t in times
+            ]
+        return {"hourly_units": {"temperature_2m": "°C"}, "hourly": hourly}
 
 
 class FakeConn:
@@ -431,6 +438,85 @@ def test_repeated_run_in_same_cell_and_hour_makes_no_requests(db):
     report = sync_weather(settings, client, db)
 
     assert client.calls == []
+    assert (report.hours_needed, report.hours_cached) == (0, 1)
+
+
+# ── D29 wind direction (v2.0 Phase C3): typed landing + the two
+#    cache-completeness arms ────────────────────────────────────────────
+
+
+@pytest.mark.integration
+def test_synced_hour_lands_wind_direction_in_typed_column(db):
+    insert_activity(db, 1, start="2026-06-15T09:47:23Z")
+    db.commit()
+
+    sync_weather(make_settings(), FakeWeatherClient(wind_direction=270.0), db)
+
+    (direction,) = db.execute(
+        "SELECT wind_direction_deg FROM raw_weather.hourly "
+        "WHERE location_key = '12.34_-56.78' AND weather_timestamp = %s",
+        (datetime(2026, 6, 15, 9, tzinfo=UTC),),
+    ).fetchone()
+    assert direction == Decimal("270")
+
+
+@pytest.mark.integration
+def test_pre_migration_row_with_data_is_refetched_and_completed(db):
+    # D29 completeness, arm 1: a pre-migration row (measurements
+    # present, direction NULL, payload without the wind_direction_10m
+    # key) must become fetch-eligible again — data alone no longer
+    # means complete. The fixture direction is exactly 0.0 so the same
+    # test pins 0° = north surviving as a value through the upsert AND
+    # satisfying completeness (a 0-coerced-to-missing bug would loop).
+    insert_activity(db, 1, start="2026-06-15T09:47:23Z")
+    db.execute(_INSERT_HOURLY, hourly_row(location="12.34_-56.78"))
+    db.commit()
+    settings = make_settings()
+
+    client = FakeWeatherClient(wind_direction=0.0)
+    sync_weather(settings, client, db)
+
+    assert len(client.calls) == 1  # the pre-migration hour was re-planned
+    (direction,) = db.execute(
+        "SELECT wind_direction_deg FROM raw_weather.hourly "
+        "WHERE location_key = '12.34_-56.78' AND weather_timestamp = %s",
+        (datetime(2026, 6, 15, 9, tzinfo=UTC),),
+    ).fetchone()
+    assert direction == Decimal("0")
+    assert direction is not None  # a value, never coerced to missing
+
+    again = FakeWeatherClient(wind_direction=0.0)
+    report = sync_weather(settings, again, db)
+    assert again.calls == []  # 0° is complete: the queue terminated
+    assert (report.hours_needed, report.hours_cached) == (0, 1)
+
+
+@pytest.mark.integration
+def test_direction_less_archive_hour_completes_on_first_fetch(db):
+    # D29 completeness, arm 2 (termination): an hour whose archive
+    # response carries no direction must be marked resolved on first
+    # fetch — the payload records wind_direction_10m as an explicit
+    # null — or the planner would re-request the same hours forever.
+    # Red proof by mutation (recorded in the commit body): with a naive
+    # `wind_direction_deg IS NOT NULL`-only clause, the second sync
+    # below repeats the fetch — the livelock this test pins.
+    insert_activity(db, 1, start="2026-06-15T09:47:23Z")
+    db.commit()
+    settings = make_settings()
+
+    sync_weather(settings, FakeWeatherClient(), db)  # no direction array served
+
+    row = db.execute(
+        "SELECT wind_direction_deg, payload ? 'wind_direction_10m', "
+        "payload -> 'wind_direction_10m' FROM raw_weather.hourly "
+        "WHERE location_key = '12.34_-56.78' AND weather_timestamp = %s",
+        (datetime(2026, 6, 15, 9, tzinfo=UTC),),
+    ).fetchone()
+    assert row == (None, True, None)  # explicit null direction, key present
+
+    again = FakeWeatherClient()
+    report = sync_weather(settings, again, db)
+    assert again.calls == []
     assert (report.hours_needed, report.hours_cached) == (0, 1)
 
 

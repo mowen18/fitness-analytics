@@ -36,3 +36,15 @@ COMMENT ON COLUMN raw_weather.hourly.payload IS
 -- staging also scans by observation time:
 CREATE INDEX IF NOT EXISTS hourly_weather_timestamp_idx
     ON raw_weather.hourly (weather_timestamp);
+
+-- Phase C3 (D29): wind direction joins the hourly variable set. The
+-- repo's first in-place column migration — ADD COLUMN IF NOT EXISTS
+-- keeps this file idempotent for both fresh container inits (the ALTER
+-- runs right after the CREATE above) and `make bootstrap` re-applies
+-- against a populated warehouse (existing rows keep their keys and get
+-- a NULL backfilled by `make reconcile-weather`, never by the DDL).
+ALTER TABLE raw_weather.hourly
+    ADD COLUMN IF NOT EXISTS wind_direction_deg numeric;
+
+COMMENT ON COLUMN raw_weather.hourly.wind_direction_deg IS
+    'Wind direction at 10 m, degrees, meteorological FROM convention (D29): 0 legitimately means north — a value, never a stand-in for missing; NULL means the archive had no direction for this hour';

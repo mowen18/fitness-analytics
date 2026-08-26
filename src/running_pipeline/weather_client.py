@@ -22,13 +22,16 @@ from running_pipeline.config import Settings
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
-# D8 hourly variables, in raw_weather.hourly column order. Open-Meteo's
-# default units already match the columns: °C, °C, %, km/h.
+# D8 (amended v2.0) hourly variables, in raw_weather.hourly column
+# order. Open-Meteo's default units already match the columns: °C, °C,
+# %, km/h, ° (wind_direction_10m: meteorological FROM convention, 0 =
+# north — a value, never a stand-in for missing; D29).
 HOURLY_VARIABLES = (
     "temperature_2m",
     "apparent_temperature",
     "relative_humidity_2m",
     "wind_speed_10m",
+    "wind_direction_10m",
 )
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -158,6 +161,7 @@ def parse_hourly_rows(
         "apparent_temperature": "apparent_temperature_c",
         "relative_humidity_2m": "relative_humidity_pct",
         "wind_speed_10m": "wind_speed_kph",
+        "wind_direction_10m": "wind_direction_deg",
     }
     rows = []
     for index, time_text in enumerate(times):
