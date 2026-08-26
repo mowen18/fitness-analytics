@@ -95,6 +95,18 @@ select
     segments.state,
     efforts.elapsed_time_s,
     efforts.moving_time_s,
+    efforts.distance_m as effort_distance_m,
+    -- Effort speed divides by ELAPSED time: Strava ranks and displays
+    -- segments on total elapsed time (moving-time speed applies to
+    -- activities, not segments), and elapsed is D28's primary series.
+    -- NULL when the payload has no distance or elapsed time is zero
+    -- (guard the division at the source) — never zero.
+    case
+        when efforts.distance_m is not null and efforts.elapsed_time_s > 0
+            then round(
+                (efforts.distance_m * 3600 / (efforts.elapsed_time_s * 1609.344))::numeric, 1
+            )
+    end as speed_mph,
     efforts.start_date_utc,
     efforts.start_date_local,
     efforts.average_hr_bpm,

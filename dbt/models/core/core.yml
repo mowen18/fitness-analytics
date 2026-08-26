@@ -309,6 +309,19 @@ models:
       - name: elapsed_time_s
         description: Effort elapsed time, seconds (D28's primary series).
         tests: [not_null]
+      - name: effort_distance_m
+        description: >
+          The effort's own recorded distance, meters (NULL when the
+          payload carries none). Kept core-only as the speed formula's
+          input; the mart projects speed alone.
+      - name: speed_mph
+        description: >
+          effort_distance_m over ELAPSED time, mph (1 dp) — the Strava
+          segment convention (segments rank and display on total
+          elapsed time; moving-time speed applies to activities, not
+          segments) and D28's primary series. NULL when distance is
+          missing or elapsed time is not positive — never zero.
+          Guarded by assert_effort_speed_matches_formula.
       - name: is_virtual_ride
         description: D28 holdout flag — kept here, excluded from marts.
         tests: [not_null]

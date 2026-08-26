@@ -509,6 +509,12 @@ models:
       - name: elapsed_time_s
         description: This effort's elapsed time, seconds — lower is faster.
         tests: [not_null]
+      - name: speed_mph
+        description: >
+          Effort speed over ELAPSED time, mph — the Strava segment
+          convention and D28's primary series; displayed context, NULL
+          when the effort payload has no distance. A pure projection
+          of core, pinned by assert_segment_trend_speed_matches_core.
       - name: rolling_median_elapsed_s
         description: >
           Median elapsed time over the last segment_rolling_effort_window

@@ -831,6 +831,7 @@ SEGMENT_TREND_DISPLAY = [
     "effort_seq",
     "elapsed_time_s",
     "moving_time_s",
+    "speed_mph",
     "rolling_median_elapsed_s",
     "rolling_effort_count",
     "best_elapsed_s",
@@ -849,6 +850,8 @@ SEGMENT_TREND_COLUMNS = {
     "effort_seq": st.column_config.NumberColumn("#"),
     "elapsed_time_s": st.column_config.NumberColumn("Elapsed (s)", format="%.0f"),
     "moving_time_s": st.column_config.NumberColumn("Moving (s)", format="%.0f"),
+    # Speed over ELAPSED time, matching Strava's segment screens.
+    "speed_mph": st.column_config.NumberColumn("Speed (mph)", format="%.1f"),
     "rolling_median_elapsed_s": st.column_config.NumberColumn("Rolling median (s)", format="%.1f"),
     "rolling_effort_count": st.column_config.NumberColumn("Window (n)"),
     "best_elapsed_s": st.column_config.NumberColumn("Best so far (s)", format="%.0f"),
@@ -874,6 +877,7 @@ def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
     shipped spec can be rendered headlessly (chart.save → PNG).
     """
     efforts = efforts.sort_values("effort_seq").copy()
+    efforts["speed_mph_display"] = format_tooltip_1dp(efforts["speed_mph"])
     efforts["average_hr_bpm_display"] = format_tooltip_1dp(efforts["average_hr_bpm"])
     efforts["average_cadence_rpm_display"] = format_tooltip_1dp(efforts["average_cadence_rpm"])
     efforts["temperature_f_display"] = format_tooltip_1dp(efforts["temperature_f"])
@@ -915,6 +919,7 @@ def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
         alt.Tooltip("start_date_local:T", title="effort", format="%b %d"),
         alt.Tooltip("elapsed_time_s:Q", title="elapsed (s)", format=".0f"),
         alt.Tooltip("moving_time_s:Q", title="moving (s)", format=".0f"),
+        alt.Tooltip("speed_mph_display:N", title="speed (mph)"),
         alt.Tooltip("average_hr_bpm_display:N", title="avg HR"),
         alt.Tooltip("average_cadence_rpm_display:N", title="cadence (rpm)"),
         alt.Tooltip("temperature_f_display:N", title="air °F"),
