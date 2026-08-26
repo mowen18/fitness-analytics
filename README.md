@@ -1,4 +1,4 @@
-# Running Analytics Pipeline
+# Running and Cycling Analytics Pipeline
 
 Incremental endurance-analytics pipeline evaluating whether aerobic
 fitness is improving over time, using Strava activities and historical
