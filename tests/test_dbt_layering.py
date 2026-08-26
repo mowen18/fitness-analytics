@@ -69,7 +69,6 @@ def test_model_dependencies_respect_the_layer_matrix(graph):
     violations = [
         f"{nodes[parent].group}.{nodes[parent].label} -> {nodes[child].group}.{nodes[child].label}"
         for parent, child in edges
-        if nodes[child].resource_type == "model"
-        and not _edge_allowed(nodes[parent], nodes[child])
+        if nodes[child].resource_type == "model" and not _edge_allowed(nodes[parent], nodes[child])
     ]
     assert violations == [], "layering violations:\n" + "\n".join(violations)

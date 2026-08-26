@@ -234,9 +234,7 @@ def _extract_efforts(payload: dict) -> list[dict]:
 def _store_success(conn: psycopg.Connection, activity_id: int, payload: dict) -> int:
     efforts = _extract_efforts(payload)
     fetched_at = datetime.now(UTC)
-    _record_status(
-        conn, activity_id, "success", payload=payload, effort_count=len(efforts)
-    )
+    _record_status(conn, activity_id, "success", payload=payload, effort_count=len(efforts))
     # Distinct segments per activity: several efforts on the same segment
     # in one ride collapse to one upsert (last write wins either way).
     segments: dict[int, dict] = {}
