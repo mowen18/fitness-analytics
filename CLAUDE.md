@@ -187,8 +187,7 @@
   output byte-identical via the 13-relation ordered-CSV snapshot
   diff. Owner's post-merge steps: live `make sync-segment-efforts`
   backfill + the Strava My Results spot check (criterion 2).
-- Phase C3 Part 1 implemented (2026-08-26, branch c3-wind — not yet
-  merged; Release 2.1 completes after live verification). D29:
+- Phase C3 complete (2026-08-26, branch c3-wind — Release 2.1). D29:
   wind_direction_10m joins HOURLY_VARIABLES, typed into
   raw_weather.hourly.wind_direction_deg (idempotent ALTER in
   sql/raw_weather.sql — the repo's first in-place column migration;
@@ -218,11 +217,20 @@
   C2 spec plus a D29 explanation (pinned by AppTest on
   direction-free fixtures). Running output byte-identical via the
   13-relation snapshot diff (tmp/c3-impl-before/ vs -after/, both
-  empty). Part 2 (live): bootstrap idempotency re-proof →
-  reconcile-weather drain (resume via incremental sync-weather, NOT
-  repeated --full) → post-drain SQL report → dbt build → scoped live
-  diff → mart headwind report. Never patch live: a live bug returns
-  to red-first discipline.
+  empty). Live verification complete (2026-08-26, no code edits, no
+  live bugs): bootstrap idempotency re-proven; the reconcile drained
+  in ONE pass — 19 requests, updated 1752, inserted 264 (recent
+  activity days riding the merged ranges) — and a follow-up
+  incremental sync made 0 requests (queue termination live-proven);
+  post-drain 2016/2016 hours carry a direction, 0 unresolved, 0
+  residue (note: Open-Meteo encodes north as 360°, observed range
+  1–360 — no live 0°; the 0-as-value contract is fixture-pinned and
+  360 is tolerated everywhere, cosine being periodic); the live
+  13-relation diff came back byte-identical (per-file checksums) —
+  stronger than the allowed weather-descendants scope; the colored
+  headwind view verified live. Slow days explained on real data: the
+  most-ridden segment's slowest effort carried +9.5 mph headwind,
+  its fastest a −5.7 tailwind.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and

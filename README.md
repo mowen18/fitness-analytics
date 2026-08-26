@@ -26,9 +26,10 @@ merged — rides core models, segment-effort ingestion (D24), the
 D28 segment trend mart, and the Cycling training + Cycling segments
 views, with running output proven byte-identical at each phase.
 Phase C3 (wind direction and headwind context, D29/D30 — Release 2.1)
-is implemented with mocked APIs and verified; its live
-`make reconcile-weather` direction backfill and live verification are
-the remaining step.
+is implemented and live-verified: the one-time direction backfill
+drained in a single `make reconcile-weather` pass, every cached hour
+now carries a direction or an explicit NULL, and running output stayed
+byte-identical through both verification regimes.
 
 ## Architecture
 
