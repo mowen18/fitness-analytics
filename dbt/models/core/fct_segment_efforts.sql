@@ -42,5 +42,18 @@ select
     wind_speed_mph,
     weather_match_minutes,
     weather_available,
+    -- D30 geometry and effort-hour wind (C3). Sign convention, pinned:
+    -- positive headwind_mph = headwind, negative = tailwind; crosswind
+    -- is the unsigned perpendicular component. Wind is matched at the
+    -- parent ride's start cell to the EFFORT's start time (60-minute
+    -- rule); winding efforts keep their computed values, flagged.
+    bearing_deg,
+    sinuosity,
+    winding_segment,
+    effort_wind_speed_mph,
+    effort_wind_direction_deg,
+    effort_wind_match_minutes,
+    headwind_mph,
+    crosswind_mph,
     fetched_at
 from efforts

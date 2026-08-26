@@ -286,7 +286,11 @@ models:
       core only). VirtualRide efforts are present and flagged — D28
       excludes them from marts, not from core; the holdout is pinned by
       assert_segment_trend_excludes_virtual_efforts. No power columns
-      exist anywhere in this chain (D27).
+      exist anywhere in this chain (D27). C3 (D30) adds segment
+      geometry and the effort-hour wind match beside the parent-ride
+      weather block: wind observed at the RIDE's start cell (the
+      documented spatial caveat — not the segment's own location) at
+      the EFFORT's start time, 60-minute rule.
     columns:
       - name: effort_id
         description: Strava segment-effort id (one row per effort).
@@ -314,3 +318,53 @@ models:
       - name: weather_available
         description: Parent ride's weather match within 60 minutes.
         tests: [not_null]
+      - name: bearing_deg
+        description: >
+          Segment straight-line initial bearing, degrees (0 = north,
+          from int_segment_geometry); NULL when endpoints are missing
+          or identical.
+        tests:
+          - accepted_range:
+              arguments: {min_value: 0, max_value: 360}
+      - name: sinuosity
+        description: >
+          Segment distance / straight-line distance (4 dp); NULL when
+          geometry is unknown.
+      - name: winding_segment
+        description: >
+          Sinuosity strictly above winding_sinuosity_max (D30): the
+          straight-line bearing misdescribes the course, so headwind is
+          computed AND flagged, never nulled. A displayed caveat, never
+          a filter; NULL when geometry is unknown.
+      - name: effort_wind_speed_mph
+        description: >
+          Wind speed of the nearest observation at the parent ride's
+          start cell to the EFFORT's start time; NULL beyond the
+          60-minute rule.
+      - name: effort_wind_direction_deg
+        description: >
+          Wind direction of that observation, meteorological FROM
+          convention — 0 = north is a value; NULL means missing (never
+          zero) or beyond the 60-minute rule.
+        tests:
+          - accepted_range:
+              arguments: {min_value: 0, max_value: 360}
+      - name: effort_wind_match_minutes
+        description: >
+          Minutes between the effort start and the nearest qualifying
+          observation — context like weather_match_minutes; values
+          above 60 explain the NULL wind columns.
+      - name: headwind_mph
+        description: >
+          effort_wind_speed_mph * cos(radians(effort_wind_direction_deg
+          - bearing_deg)). Sign convention (D30, the D17 pattern):
+          POSITIVE = HEADWIND — wind opposing travel along the
+          segment's straight-line bearing; negative = tailwind. NULL
+          whenever direction, the 60-minute match, or the bearing is
+          missing — never zero. Guarded by
+          assert_headwind_matches_formula_and_null_rules.
+      - name: crosswind_mph
+        description: >
+          The unsigned perpendicular component (abs(sin(...)) on the
+          same inputs) — secondary context per D30; same NULL rules as
+          headwind_mph.

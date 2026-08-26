@@ -22,12 +22,14 @@ Revisions section and [docs/decisions/](docs/decisions/) record every
 change, v1.1 through v2.0).
 **Status:** running domain complete — Phases 0–6 plus revisions through
 v1.9 implemented and verified. Cycling domain (v2.0): Phases C1 and C2
-implemented — rides core models, segment-effort ingestion (D24), the
+merged — rides core models, segment-effort ingestion (D24), the
 D28 segment trend mart, and the Cycling training + Cycling segments
 views, with running output proven byte-identical at each phase.
-Release 2.0 completes once the live `make sync-segment-efforts`
-backfill drains. Next: C3 (wind-direction and headwind context,
-Release 2.1).
+Phase C3 (wind direction and headwind context, D29/D30 — Release 2.1)
+is implemented and live-verified: the one-time direction backfill
+drained in a single `make reconcile-weather` pass, every cached hour
+now carries a direction or an explicit NULL, and running output stayed
+byte-identical through both verification regimes.
 
 ## Architecture
 
@@ -202,6 +204,18 @@ one archive request per location and contiguous date range. Re-runs are
 idempotent and repeated runs in the same cell hit the cache with zero
 requests.
 
+**Wind direction (D29, C3).** The hourly variable set is temperature,
+apparent temperature, relative humidity, wind speed, and — since C3 —
+`wind_direction_10m`, stored as `wind_direction_deg` (meteorological
+FROM convention: **0° legitimately means north — a value; missing is
+NULL, never zero**). A cached hour counts as complete only when its
+direction is *resolved*: either a stored value, or a payload carrying
+the `wind_direction_10m` key as an explicit null (the client records
+every requested variable). Hours fetched before C3 lack the key, so
+one `make reconcile-weather` pass re-fetches them — resumable across
+runs within `WEATHER_REQUEST_BUDGET` by cache design — after which the
+queue is empty and stays empty.
+
 **Map-privacy fallback.** Strava's "hide entire map" setting strips
 `start_latlng` from API payloads — even the owner's — so
 `make backfill-coordinates` resolves each run's start coordinate with
@@ -251,6 +265,7 @@ flowchart LR
         model_running_analytics_int_run_stream_state["int_run_stream_state"]
         model_running_analytics_int_runs_with_weather["int_runs_with_weather"]
         model_running_analytics_int_segment_efforts["int_segment_efforts"]
+        model_running_analytics_int_segment_geometry["int_segment_geometry"]
     end
 
     subgraph core["Core"]
@@ -309,6 +324,7 @@ flowchart LR
     model_running_analytics_int_run_stream_state --> model_running_analytics_int_run_band_assessment
     model_running_analytics_int_runs_with_weather --> model_running_analytics_int_run_efficiency
     model_running_analytics_int_segment_efforts --> model_running_analytics_fct_segment_efforts
+    model_running_analytics_int_segment_geometry --> model_running_analytics_int_segment_efforts
     model_running_analytics_mart_band_weekly --> model_running_analytics_mart_band_trend
     model_running_analytics_mart_run_drift --> model_running_analytics_mart_drift_trend
     model_running_analytics_mart_weekly_training --> model_running_analytics_mart_efficiency_trend
@@ -316,8 +332,10 @@ flowchart LR
     model_running_analytics_stg_strava__activities --> model_running_analytics_int_runs_with_weather
     model_running_analytics_stg_strava__segment_efforts --> model_running_analytics_int_segment_efforts
     model_running_analytics_stg_strava__segments --> model_running_analytics_int_segment_efforts
+    model_running_analytics_stg_strava__segments --> model_running_analytics_int_segment_geometry
     model_running_analytics_stg_weather__hourly --> model_running_analytics_int_rides_with_weather
     model_running_analytics_stg_weather__hourly --> model_running_analytics_int_runs_with_weather
+    model_running_analytics_stg_weather__hourly --> model_running_analytics_int_segment_efforts
     seed_running_analytics_hr_bands --> model_running_analytics_int_band_window_samples
     seed_running_analytics_hr_bands --> model_running_analytics_mart_band_weekly
     seed_running_analytics_hr_bands --> model_running_analytics_mart_run_band_segments
@@ -489,6 +507,34 @@ reported per segment as `virtual_effort_count`; a parent ride failing
 D25's sanity checks marks its efforts with the ride's exclusion reason
 as a displayed caveat, never a filter. No power fields are modeled
 anywhere in the chain (D27): estimated watts stay raw-JSONB-only.
+
+### Headwind context (cycling, D29/D30)
+
+On a fixed segment, wind is the largest remaining condition variable —
+the headwind component is what explains slow days. Each segment gets a
+**great-circle initial bearing** from its start to end coordinates and
+a **sinuosity** (segment distance / haversine straight line,
+`int_segment_geometry`); segments strictly above
+`winding_sinuosity_max` (1.3) carry a displayed `winding_segment` flag
+— the straight-line bearing misdescribes their course — but are never
+excluded. Each effort is matched to the **nearest cached hourly
+observation at the parent ride's start cell** (the documented spatial
+caveat: wind is not observed at the segment's own location) at the
+**effort's** start time, within 60 minutes. Then:
+
+```text
+headwind_mph  = effort_wind_speed_mph × cos(radians(direction − bearing))
+crosswind_mph = effort_wind_speed_mph × |sin(radians(direction − bearing))|
+```
+
+**Sign convention (D30): positive = headwind** — wind opposing travel
+along the segment's bearing; negative = tailwind; crosswind is the
+unsigned perpendicular component. Headwind is **NULL whenever wind
+direction, the 60-minute match, or the segment bearing is missing —
+never zero** — and computed-and-flagged, not nulled, on winding
+segments. The Cycling segments view colors effort points on a
+diverging blue↔red scale (red = headwind) and degrades to the plain
+trend with an explanation when direction is not yet cached.
 
 ## Stream ingestion and cardiac drift
 

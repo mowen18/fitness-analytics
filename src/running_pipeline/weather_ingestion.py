@@ -25,9 +25,16 @@ rare case — and are re-requested by later syncs until data appears. A
 cache-completeness check must know whether the source's answer was
 final; ours treats any non-NULL value as final, so preliminary values
 are frozen until a `full` re-fetch, whose IS DISTINCT FROM upsert
-absorbs revisions. A failed batch never fails the sync: it is logged,
-counted, and left for the next run. Coordinates are never logged beyond
-the 2-dp cell key.
+absorbs revisions. Since D29 (v2.0 Phase C3) completeness additionally
+requires wind direction to be RESOLVED: either a value in
+wind_direction_deg, or a payload carrying the wind_direction_10m key
+(present as an explicit null when the archive has no direction — the
+client records every requested variable). Rows fetched before the
+migration lack the key and become fetch-eligible again exactly once;
+the first re-fetch resolves them either way, so the queue terminates.
+A failed batch never fails the sync: it is logged, counted, and left
+for the next run. Coordinates are never logged beyond the 2-dp cell
+key.
 """
 
 import logging
@@ -93,18 +100,25 @@ _INELIGIBLE_RUNS_SQL = """
                AND jsonb_array_length(coalesce(a.payload->'start_latlng', '[]'::jsonb)) <> 2))
 """
 
-# An hour "has data" when any measurement is present; an all-NULL row is
-# the explicit missing marker and stays eligible for re-fetching. This
-# check is also the cache's blind spot: it cannot tell final ERA5 values
-# from preliminary best_match (IFS) fill-in, so any non-NULL value counts
-# as done and stays frozen until a full re-fetch.
-_HAS_DATA = """(h.temperature_c IS NOT NULL
+# An hour is complete when (a) any measurement is present — an all-NULL
+# row is the explicit missing marker and stays eligible for re-fetching —
+# AND (b) wind direction is resolved (D29): a wind_direction_deg value,
+# or the payload carrying the wind_direction_10m key (an explicit null
+# when the archive has no direction; the client records every requested
+# variable, so the key's absence means "fetched before the migration").
+# 0° is a value and satisfies (b) — north, never a stand-in for missing.
+# The measurement arm is also the cache's blind spot: it cannot tell
+# final ERA5 values from preliminary best_match (IFS) fill-in, so any
+# non-NULL value counts as done and stays frozen until a full re-fetch.
+_IS_COMPLETE = """((h.temperature_c IS NOT NULL
                 OR h.apparent_temperature_c IS NOT NULL
                 OR h.relative_humidity_pct IS NOT NULL
-                OR h.wind_speed_kph IS NOT NULL)"""
+                OR h.wind_speed_kph IS NOT NULL)
+               AND (h.wind_direction_deg IS NOT NULL
+                    OR h.payload ? 'wind_direction_10m'))"""
 
 _CACHE_STATE_SQL = f"""
-    SELECT h.location_key, h.weather_timestamp, {_HAS_DATA} AS has_data
+    SELECT h.location_key, h.weather_timestamp, {_IS_COMPLETE} AS is_complete
     FROM raw_weather.hourly h
     JOIN unnest(%(keys)s::text[], %(hours)s::timestamptz[])
          AS need(location_key, weather_timestamp)
@@ -120,7 +134,7 @@ _STILL_MISSING_SQL = f"""
         SELECT 1 FROM raw_weather.hourly h
         WHERE h.location_key = need.location_key
           AND h.weather_timestamp = need.weather_timestamp
-          AND {_HAS_DATA}
+          AND {_IS_COMPLETE}
     )
 """
 
@@ -130,10 +144,11 @@ _STILL_MISSING_SQL = f"""
 _UPSERT_SQL = """
     INSERT INTO raw_weather.hourly
         (location_key, latitude, longitude, weather_timestamp, temperature_c,
-         apparent_temperature_c, relative_humidity_pct, wind_speed_kph, payload, fetched_at)
+         apparent_temperature_c, relative_humidity_pct, wind_speed_kph,
+         wind_direction_deg, payload, fetched_at)
     VALUES (%(location_key)s, %(latitude)s, %(longitude)s, %(weather_timestamp)s,
             %(temperature_c)s, %(apparent_temperature_c)s, %(relative_humidity_pct)s,
-            %(wind_speed_kph)s, %(payload)s, %(fetched_at)s)
+            %(wind_speed_kph)s, %(wind_direction_deg)s, %(payload)s, %(fetched_at)s)
     ON CONFLICT (location_key, weather_timestamp) DO UPDATE SET
         latitude               = EXCLUDED.latitude,
         longitude              = EXCLUDED.longitude,
@@ -141,6 +156,7 @@ _UPSERT_SQL = """
         apparent_temperature_c = EXCLUDED.apparent_temperature_c,
         relative_humidity_pct  = EXCLUDED.relative_humidity_pct,
         wind_speed_kph         = EXCLUDED.wind_speed_kph,
+        wind_direction_deg     = EXCLUDED.wind_direction_deg,
         payload                = EXCLUDED.payload,
         fetched_at             = EXCLUDED.fetched_at
     WHERE hourly.payload IS DISTINCT FROM EXCLUDED.payload
@@ -234,12 +250,13 @@ def plan_fetches(
 ) -> FetchPlan:
     """Turn run location-hours into per-cell date-range batches (pure).
 
-    `cache` maps (location_key, hour) to has_data for hours already in
-    raw_weather.hourly. Hours cached *with data* are skipped unless
-    `full` — even when that data is preliminary best_match fill-in,
-    because has_data cannot tell preliminary from final; all-NULL hours
-    (the archive genuinely had no data) are always re-requested so they
-    self-heal. Needed dates per cell merge into one batch while
+    `cache` maps (location_key, hour) to is_complete for hours already
+    in raw_weather.hourly. Complete hours are skipped unless `full` —
+    even when their data is preliminary best_match fill-in, because
+    completeness cannot tell preliminary from final; all-NULL hours
+    (the archive genuinely had no data) and hours whose wind direction
+    is unresolved (D29: fetched before the migration) are re-requested
+    so they self-heal. Needed dates per cell merge into one batch while
     gaps stay within `gap_days`; whole days are fetched (and later
     stored) because the archive returns them anyway.
     """
@@ -376,15 +393,16 @@ def _upsert_hour(conn: psycopg.Connection, row: dict) -> str:
 def _load_cache_state(
     conn: psycopg.Connection, pairs: list[tuple[str, datetime]]
 ) -> dict[tuple[str, datetime], bool]:
-    """(location_key, hour) -> has_data for pairs already in raw_weather.hourly."""
+    """(location_key, hour) -> is_complete for pairs already in raw_weather.hourly."""
     if not pairs:
         return {}
     rows = conn.execute(_CACHE_STATE_SQL, _pair_arrays(pairs)).fetchall()
-    return {(key, hour): has_data for key, hour, has_data in rows}
+    return {(key, hour): is_complete for key, hour, is_complete in rows}
 
 
 def _count_still_missing(conn: psycopg.Connection, pairs: list[tuple[str, datetime]]) -> int:
-    """Run location-hours still lacking any measurement (absent or all-NULL)."""
+    """Run location-hours not yet complete (absent, all-NULL, or
+    direction unresolved per D29) — the drain loop's termination metric."""
     if not pairs:
         return 0
     return conn.execute(_STILL_MISSING_SQL, _pair_arrays(pairs)).fetchone()[0]

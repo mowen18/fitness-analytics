@@ -156,8 +156,8 @@
   Running output proven byte-identical: 13-relation ordered-CSV
   snapshot diffed interim (post-sync, pre-dbt) and final — both
   empty; ride weather sync inserted 624 rows, updated 0.
-- Phase C2 implemented (2026-08-24, branch c2-segment-efforts — not
-  yet merged; Release 2.0 completes once the live backfill drains).
+- Phase C2 merged to main (2026-08-24; Release 2.0 completes once the
+  live backfill drains).
   D24 ingestion: per-ride detail fetch (include_all_efforts=true)
   into raw_strava.activity_details (status rows success/failed/
   unavailable, absent = not attempted; status rows ARE the resume
@@ -186,8 +186,51 @@
   (MART_TABLES pin and VIEW_NAMES render both proven red). Running
   output byte-identical via the 13-relation ordered-CSV snapshot
   diff. Owner's post-merge steps: live `make sync-segment-efforts`
-  backfill + the Strava My Results spot check (criterion 2). C3 NOT
-  started.
+  backfill + the Strava My Results spot check (criterion 2).
+- Phase C3 complete (2026-08-26, branch c3-wind — Release 2.1). D29:
+  wind_direction_10m joins HOURLY_VARIABLES, typed into
+  raw_weather.hourly.wind_direction_deg (idempotent ALTER in
+  sql/raw_weather.sql — the repo's first in-place column migration;
+  FROM convention, 0 = north is a value, missing NULL never zero).
+  Cache completeness became _IS_COMPLETE: has-any-measurement AND
+  direction resolved (a value OR the payload carrying the
+  wind_direction_10m key — post-C3 payloads always carry it, null
+  when the archive has none), so pre-migration rows re-fetch exactly
+  once and the queue terminates (livelock pinned red-by-mutation);
+  the payload-only IS DISTINCT FROM upsert guard is unchanged. D30:
+  int_segment_geometry (segment grain — great-circle bearing via
+  bearing_degrees macro, haversine straight-line via haversine_meters
+  macro R=6371008.8, sinuosity 4 dp, winding_segment strictly > new
+  var winding_sinuosity_max 1.3, unknown geometry NULL never false);
+  int_segment_efforts gains the effort-hour wind match (nearest
+  has_measurements observation at the parent ride's start cell to
+  the EFFORT's start time, 60-minute rule, deterministic tie-break
+  as a commented deviation) and computes headwind_mph (POSITIVE =
+  HEADWIND, pinned) / crosswind_mph; fct_segment_efforts +8 columns;
+  mart_segment_trend +exactly headwind_mph / crosswind_mph /
+  winding_segment. NO allow-list change and NO layer-matrix change.
+  Three singular pins (winding var-pin; headwind formula+null-iff;
+  mart-core lockstep — the latter two red-proven by injection). App:
+  segment points color on the diverging blue↔red pair when headwind
+  exists (gray = no direction), sign + spatial-caveat captions,
+  NaN-safe winding caption; direction-free segments render the EXACT
+  C2 spec plus a D29 explanation (pinned by AppTest on
+  direction-free fixtures). Running output byte-identical via the
+  13-relation snapshot diff (tmp/c3-impl-before/ vs -after/, both
+  empty). Live verification complete (2026-08-26, no code edits, no
+  live bugs): bootstrap idempotency re-proven; the reconcile drained
+  in ONE pass — 19 requests, updated 1752, inserted 264 (recent
+  activity days riding the merged ranges) — and a follow-up
+  incremental sync made 0 requests (queue termination live-proven);
+  post-drain 2016/2016 hours carry a direction, 0 unresolved, 0
+  residue (note: Open-Meteo encodes north as 360°, observed range
+  1–360 — no live 0°; the 0-as-value contract is fixture-pinned and
+  360 is tolerated everywhere, cosine being periodic); the live
+  13-relation diff came back byte-identical (per-file checksums) —
+  stronger than the allowed weather-descendants scope; the colored
+  headwind view verified live. Slow days explained on real data: the
+  most-ridden segment's slowest effort carried +9.5 mph headwind,
+  its fastest a −5.7 tailwind.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and

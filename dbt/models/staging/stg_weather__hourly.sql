@@ -16,6 +16,11 @@ select
     relative_humidity_pct,
     wind_speed_kph,
     round(wind_speed_kph / 1.609344, 1)               as wind_speed_mph,
+    -- D29 (C3): meteorological FROM convention; 0 = north is a value,
+    -- NULL = missing, never zero. Deliberately NOT part of
+    -- has_measurements below: direction never decides whether an hour
+    -- counts as an observation (the running side is untouched by C3).
+    wind_direction_deg,
     -- False marks the explicit "archive had no data" rows (all-NULL
     -- measurements); downstream matching must never treat them as data.
     (

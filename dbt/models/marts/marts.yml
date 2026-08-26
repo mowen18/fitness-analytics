@@ -549,3 +549,24 @@ models:
         description: >
           Parent ride's first failing D25 rule; NULL when valid. Shown
           per point — suspect effort times stay visible, never dropped.
+      - name: headwind_mph
+        description: >
+          The D30 headwind component of the effort-hour wind along the
+          segment's straight-line bearing. Sign convention (D30, the
+          D17 pattern): POSITIVE = HEADWIND — wind opposing travel;
+          negative = tailwind. Wind is observed at the parent ride's
+          start cell, not the segment's location (the documented
+          spatial caveat), matched to the EFFORT's start time within
+          60 minutes. NULL when direction, the match, or the bearing
+          is missing — never zero. A pure projection of core, pinned
+          by assert_segment_trend_wind_matches_core.
+      - name: crosswind_mph
+        description: >
+          Unsigned perpendicular wind component (secondary, D30); same
+          NULL rules and core lockstep as headwind_mph.
+      - name: winding_segment
+        description: >
+          Sinuosity strictly above winding_sinuosity_max (D30): the
+          straight-line bearing misdescribes this segment's course, so
+          read its headwind skeptically — computed and flagged, never
+          nulled, never a filter. NULL when geometry is unknown.

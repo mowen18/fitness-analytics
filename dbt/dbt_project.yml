@@ -64,6 +64,11 @@ vars:
   segment_rolling_effort_window: 5
   segment_trend_min_efforts: 5
   short_segment_seconds: 120
+  # Headwind context, Phase C3 (D30: segments strictly above this
+  # sinuosity carry the displayed winding_segment flag — the
+  # straight-line bearing misdescribes them — never a filter). Name
+  # follows the D30 decision record verbatim.
+  winding_sinuosity_max: 1.3
 
 # Layers map onto the five locked schemas (D3). generate_schema_name is
 # overridden so these names are used exactly, without dbt's default
