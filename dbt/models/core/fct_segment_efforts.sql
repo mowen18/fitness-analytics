@@ -22,6 +22,8 @@ select
     state,
     elapsed_time_s,
     moving_time_s,
+    effort_distance_m,
+    speed_mph,
     start_date_utc,
     start_date_local,
     average_hr_bpm,

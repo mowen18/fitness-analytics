@@ -209,6 +209,11 @@ models:
         tests: [not_null]
       - name: moving_time_s
         description: Effort moving time, seconds (secondary).
+      - name: distance_m
+        description: >
+          The effort's own recorded distance, meters. NULL when the
+          payload has no distance — speed is derived downstream and
+          missing stays missing, never zero.
       - name: average_hr_bpm
         description: Average HR over the effort; NULL when not recorded.
       - name: average_cadence_rpm

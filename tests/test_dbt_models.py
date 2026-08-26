@@ -1108,18 +1108,34 @@ def insert_segment(
 
 
 def insert_segment_effort(
-    db, effort_id, activity_id, segment_id, *, elapsed, start, hr=None, cadence=None, pr_rank=None
+    db,
+    effort_id,
+    activity_id,
+    segment_id,
+    *,
+    elapsed,
+    start,
+    hr=None,
+    cadence=None,
+    pr_rank=None,
+    moving=None,
+    distance=None,
 ):
+    # moving=None mirrors elapsed (the common case); distance=None
+    # omits the key entirely (a payload without the field), so every
+    # pre-speed call site stays byte-identical.
     payload = {
         "id": effort_id,
         "elapsed_time": elapsed,
-        "moving_time": elapsed,
+        "moving_time": elapsed if moving is None else moving,
         "start_date": start,
         "start_date_local": start,
         "average_heartrate": hr,
         "average_cadence": cadence,
         "pr_rank": pr_rank,
     }
+    if distance is not None:
+        payload["distance"] = distance
     db.execute(
         "INSERT INTO raw_strava.segment_efforts"
         " (effort_id, activity_id, segment_id, payload, fetched_at)"
@@ -1546,3 +1562,81 @@ def test_wind_pin_tests_fail_on_injected_rows(db):
     db.commit()
     result = run_dbt("test", "--select", selector)
     assert result.returncode == 0, f"mart-core wind lockstep pin still failing:\n{result.stdout}"
+
+
+# ── Effort speed (post-2.1): distance / ELAPSED time, in mph ──────────
+
+
+@pytest.mark.integration
+def test_effort_speed_formula_and_pins(db):
+    # Effort speed uses ELAPSED time, the Strava convention for
+    # segments (segments are "ranked according to 'Total Elapsed
+    # Time'"; moving-time speed applies to activities, "not segments
+    # or best efforts") — and D28's primary series. 1609.344 m in
+    # 360 s is exactly 10.0 mph; moving_time is deliberately half of
+    # elapsed, so a formula that divided by moving time would read
+    # 20.0 — the denominator pin. A payload without a distance and an
+    # effort with zero elapsed time both yield NULL, never zero.
+    outdoor_ride(db, 261, day="2026-06-15", hr=140)
+    insert_segment(db, 508)
+    insert_segment_effort(
+        db, 2611, 261, 508, elapsed=360, moving=180, distance=1609.344, start="2026-06-15T09:20:00Z"
+    )
+    insert_segment_effort(db, 2612, 261, 508, elapsed=300, start="2026-06-15T09:30:00Z")
+    insert_segment_effort(
+        db, 2613, 261, 508, elapsed=0, distance=500.0, start="2026-06-15T09:40:00Z"
+    )
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    core = {
+        row[0]: row[1:]
+        for row in db.execute(
+            "SELECT effort_id, effort_distance_m, speed_mph FROM analytics.fct_segment_efforts"
+        ).fetchall()
+    }
+    assert core[2611] == (Decimal("1609.344"), Decimal("10.0"))
+    assert core[2612] == (None, None)  # no distance in the payload
+    assert core[2613] == (Decimal("500.0"), None)  # zero elapsed: guarded
+
+    mart = {
+        row[0]: row[1]
+        for row in db.execute(
+            "SELECT effort_id, speed_mph FROM analytics.mart_segment_trend"
+        ).fetchall()
+    }
+    assert mart[2611] == Decimal("10.0")
+    assert mart[2612] is None
+
+    # Red-by-injection proofs for the two new pins (the C2/C3 pattern).
+    db.execute(
+        "INSERT INTO analytics.fct_segment_efforts"
+        " (effort_id, activity_id, segment_id, elapsed_time_s, is_virtual_ride,"
+        "  ride_is_valid, weather_available, effort_distance_m, speed_mph)"
+        " VALUES (999999995, 999999994, 508, 360, false, true, false, 1609.344, 5.0)"
+    )
+    db.commit()
+    selector = "assert_effort_speed_matches_formula"
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode != 0, "speed formula pin should fail on an injected row"
+    assert selector in result.stdout
+    db.execute("DELETE FROM analytics.fct_segment_efforts WHERE effort_id = 999999995")
+    db.commit()
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode == 0, f"speed formula pin still failing:\n{result.stdout}"
+
+    db.execute(
+        "INSERT INTO analytics.mart_segment_trend (effort_id, segment_id, speed_mph)"
+        " VALUES (2611, 508, 99.9)"
+    )
+    db.commit()
+    selector = "assert_segment_trend_speed_matches_core"
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode != 0, "mart-core speed lockstep pin should fail on an injected row"
+    assert selector in result.stdout
+    db.execute("DELETE FROM analytics.mart_segment_trend WHERE speed_mph = 99.9")
+    db.commit()
+    result = run_dbt("test", "--select", selector)
+    assert result.returncode == 0, f"mart-core speed lockstep pin still failing:\n{result.stdout}"

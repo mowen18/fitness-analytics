@@ -96,6 +96,10 @@ select
     sequenced.start_date_local,
     sequenced.elapsed_time_s,
     sequenced.moving_time_s,
+    -- Effort speed over ELAPSED time (the Strava segment convention;
+    -- D28's primary series) — displayed context, projected from core
+    -- and pinned by assert_segment_trend_speed_matches_core.
+    sequenced.speed_mph,
     sequenced.average_hr_bpm,
     sequenced.average_cadence_rpm,
     sequenced.pr_rank,

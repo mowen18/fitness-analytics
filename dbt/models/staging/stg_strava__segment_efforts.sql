@@ -10,6 +10,9 @@ select
     segment_id,
     (payload ->> 'elapsed_time')::integer       as elapsed_time_s,
     (payload ->> 'moving_time')::integer        as moving_time_s,
+    -- The effort's own recorded distance. Absent key stays NULL —
+    -- speed is derived downstream and missing stays missing.
+    (payload ->> 'distance')::numeric           as distance_m,
     (payload ->> 'start_date')::timestamptz     as start_date_utc,
     -- Strava sends start_date_local with a literal 'Z' even though it is
     -- local wall-clock time; ::timestamp deliberately drops that bogus
