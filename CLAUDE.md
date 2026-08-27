@@ -231,6 +231,13 @@
   headwind view verified live. Slow days explained on real data: the
   most-ridden segment's slowest effort carried +9.5 mph headwind,
   its fastest a −5.7 tailwind.
+- Segment view cleanup (app-only, 2026-08-27): metric row shows
+  distance and average grade from mart_segment_trend; VirtualRide
+  tile removed, count stays in the chart caption; standing captions
+  reduced to SEGMENT_TREND_NOTE and HEADWIND_SIGN_NOTE, and tests
+  assert those constants instead of phrases. D17 unchanged;
+  enforcement moved from phrase match to constant check. Running
+  views and their phrase assertions untouched.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and
