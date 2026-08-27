@@ -817,6 +817,18 @@ def cycling_view():
 # day-gap break rule does not transfer and no path breaks exist.
 ROLLING_LINE_MIN_WINDOW_EFFORTS = 2
 
+# D17 idiom: each sign convention is stated on the view. Tests assert
+# these constants render, not their wording.
+SEGMENT_TREND_NOTE = (
+    "Elapsed time on a fixed Strava segment (D28). Lower = faster. "
+    "Observational, not proof."
+)
+HEADWIND_SIGN_NOTE = (
+    "Point color = headwind (D30): red = positive = headwind, "
+    "blue = tailwind, gray = no direction. Wind is observed at the "
+    "ride's start cell, not the segment."
+)
+
 # D30 headwind coloring: the reference palette's diverging pair (blue ↔
 # red with a neutral gray midpoint — two hues, never a hue at zero).
 # Red = positive = headwind (slow days), blue = tailwind; the midpoint
@@ -855,9 +867,15 @@ SEGMENT_TREND_COLUMNS = {
     "rolling_median_elapsed_s": st.column_config.NumberColumn("Rolling median (s)", format="%.1f"),
     "rolling_effort_count": st.column_config.NumberColumn("Window (n)"),
     "best_elapsed_s": st.column_config.NumberColumn("Best so far (s)", format="%.0f"),
-    "average_hr_bpm": st.column_config.NumberColumn("Avg HR", format="%.0f"),
-    "average_cadence_rpm": st.column_config.NumberColumn("Cadence (rpm)", format="%.0f"),
-    "pr_rank": st.column_config.NumberColumn("PR rank"),
+    "average_hr_bpm": st.column_config.NumberColumn(
+        "Avg HR", format="%.0f", help="Blank when unrecorded, never zero."
+    ),
+    "average_cadence_rpm": st.column_config.NumberColumn(
+        "Cadence (rpm)", format="%.0f", help="Blank when unrecorded, never zero."
+    ),
+    "pr_rank": st.column_config.NumberColumn(
+        "PR rank", help="Blank when unrecorded, never zero."
+    ),
     "ride_is_valid": st.column_config.CheckboxColumn("Ride valid"),
     "ride_exclusion_reason": st.column_config.TextColumn("Ride exclusion reason"),
     "temperature_f": st.column_config.NumberColumn("Air °F", format="%.1f"),
@@ -982,11 +1000,7 @@ def segment_chart(efforts: pd.DataFrame) -> alt.LayerChart:
 
 def segments_view():
     st.header("Cycling segments")
-    st.caption(
-        "Per-segment effort trend (D28): elapsed time on a fixed Strava "
-        "segment, holding the course constant so effort time at comparable "
-        "heart rate is the controlled cycling signal. Lower = faster. " + OBSERVATIONAL_NOTE
-    )
+    st.caption(SEGMENT_TREND_NOTE)
 
     trend = load("mart_segment_trend")
     if trend.empty:
@@ -1011,22 +1025,27 @@ def segments_view():
         ~duplicate_names,
         options["segment_name"] + " #" + options["segment_id"].astype(int).astype(str),
     )
-    choice = st.selectbox("Segment (≥ 5 efforts)", options["label"].tolist())
-    selected = options.set_index("label").loc[choice]
     hidden_count = len(segments) - len(sufficient)
-    if hidden_count:
-        st.caption(
+    choice = st.selectbox(
+        "Segment (≥ 5 efforts)",
+        options["label"].tolist(),
+        help=(
             f"{hidden_count} tracked segment(s) under 5 efforts are not offered "
             "here yet — their efforts still count and the segment appears at 5."
-        )
+            if hidden_count
+            else None
+        ),
+    )
+    selected = options.set_index("label").loc[choice]
 
     efforts = trend[trend["segment_id"] == selected["segment_id"]].sort_values("effort_seq").copy()
     row = efforts.iloc[-1]
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Efforts", int(row["effort_count"]))
-    col2.metric("Best time", f"{int(row['best_elapsed_s'])} s")
-    col3.metric("Rolling median", f"{float(row['rolling_median_elapsed_s']):.1f} s")
-    col4.metric("VirtualRide excluded", int(row["virtual_effort_count"]))
+    col2.metric("Distance", f"{float(row['segment_distance_m']) / 1609.344:.2f} mi")
+    col3.metric("Avg grade", f"{float(row['average_grade_pct']):.1f}%")
+    col4.metric("Best time", f"{int(row['best_elapsed_s'])} s")
+    col5.metric("Rolling median", f"{float(row['rolling_median_elapsed_s']):.1f} s")
 
     if bool(row["short_segment"]):
         st.caption(
@@ -1046,46 +1065,37 @@ def segments_view():
             "course (D30). Computed and flagged, never excluded."
         )
 
+    st.altair_chart(themed(segment_chart(efforts)), width="stretch")
+
+    # One caption below the chart: the D30 sign convention — or, per C3
+    # acceptance criterion 5, the degradation explanation when no
+    # direction is cached (never a crash, never silent) — then the
+    # counts, then the line and step legend.
     has_headwind = bool(efforts["headwind_mph"].notna().any())
-    if has_headwind:
-        st.caption(
-            "Headwind context (D30): effort points are colored by the "
-            "headwind component — red = positive = headwind (slows the "
-            "effort), blue = tailwind, gray = no direction for that hour. "
-            "Wind is observed at the parent ride's start cell, not the "
-            "segment's location, matched to each effort's start time within "
-            "60 minutes."
-        )
-    else:
-        # C3 acceptance criterion 5: missing direction degrades to the
-        # C2 chart with an explanation — never a crash, never silent.
-        st.caption(
+    context = (
+        HEADWIND_SIGN_NOTE
+        if has_headwind
+        else (
             "No wind direction is cached for these efforts yet, so the "
             "trend shows without headwind context (D29). Run "
             "`make reconcile-weather` and then `make dbt-build` to "
             "backfill direction."
         )
-
-    st.altair_chart(themed(segment_chart(efforts)), width="stretch")
-    invalid_count = int((~efforts["ride_is_valid"].astype(bool)).sum())
-    point_description = (
-        "One point per effort, colored by headwind"
-        if has_headwind
-        else "One hollow point per effort"
     )
+    invalid_count = int((~efforts["ride_is_valid"].astype(bool)).sum())
     st.caption(
-        f"{point_description} — {len(efforts)} shown; "
+        f"{context} {len(efforts)} effort(s) shown; "
         f"{int(row['virtual_effort_count'])} VirtualRide effort(s) on this "
-        "segment are excluded from every number here (D28). The blue line is "
-        "the rolling median of the last 5 efforts, drawn once the window "
-        f"holds at least {ROLLING_LINE_MIN_WINDOW_EFFORTS}; the dashed gray "
-        "step is the cumulative best."
+        "segment are excluded from every number here (D28)."
         + (
             f" {invalid_count} effort(s) come from rides failing D25 sanity "
             "checks — suspect times, shown with their reason, never dropped."
             if invalid_count
             else ""
         )
+        + " The blue line is the rolling median of the last 5 efforts, drawn "
+        f"once the window holds at least {ROLLING_LINE_MIN_WINDOW_EFFORTS}; "
+        "the dashed gray step is the cumulative best."
     )
 
     st.dataframe(
@@ -1093,11 +1103,6 @@ def segments_view():
         width="stretch",
         hide_index=True,
         column_config=SEGMENT_TREND_COLUMNS,
-    )
-    st.caption(
-        "Every non-virtual effort on the selected segment, with the parent "
-        "ride's D25 verdict and matched weather. Heart rate, cadence, and "
-        "PR rank stay blank — never zero — when unrecorded."
     )
 
 

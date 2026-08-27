@@ -206,9 +206,12 @@ def test_segment_view_gates_picker_and_captions_exclusions(db):  # noqa: F811
     # offers only >= 5-effort segments, the short-segment caveat
     # renders, and the excluded-VirtualRide count appears in the
     # sample caption (readable from mart_segment_trend alone — D19).
+    # The metric row identifies the segment (distance, grade) and
+    # carries no VirtualRide tile; the hidden-segment count lives in
+    # the picker's help, not a caption.
     outdoor_ride(db, 61, day="2026-06-15", hr=140)
     outdoor_ride(db, 62, day="2026-06-16", sport_type="VirtualRide")
-    insert_segment(db, 601, name="Sufficient Sprint")
+    insert_segment(db, 601, name="Sufficient Sprint", distance=1200.0)
     insert_segment(db, 602, name="Sparse Hill")
     for n, elapsed in enumerate([100, 101, 99, 100, 102]):  # median 100 s: short
         insert_segment_effort(
@@ -225,10 +228,17 @@ def test_segment_view_gates_picker_and_captions_exclusions(db):  # noqa: F811
     options = at.selectbox[0].options
     assert "Sufficient Sprint" in options
     assert all("Sparse Hill" not in option for option in options)  # 1 effort: not offered
+    labels = [metric.label for metric in at.metric]
+    assert labels == ["Efforts", "Distance", "Avg grade", "Best time", "Rolling median"]
+    assert not any("VirtualRide" in label for label in labels)  # the count lives in the caption
+    assert at.metric[1].value == f"{1200.0 / 1609.344:.2f} mi"  # the fixture distance, in miles
+    assert at.metric[2].value == "1.4%"  # insert_segment's fixed average_grade
     captions = " ".join(c.value for c in at.caption)
     assert "1 VirtualRide effort(s)" in captions  # criterion 4: counted, not silent
     assert "Short segment" in captions  # criterion 3: the caveat renders
-    assert "Lower = faster" in captions  # the sign convention is stated on the view
+    assert "tracked segment(s) under 5 efforts" not in captions  # picker help, not a caption
+    app = load_app_module()
+    assert app.SEGMENT_TREND_NOTE in captions  # the sign convention is stated on the view
 
 
 def _five_efforts(conn, activity_id, segment_id, first_effort_id):
@@ -269,8 +279,8 @@ def test_segment_view_headwind_context_and_sign_caption(db):  # noqa: F811
     at = render("Cycling segments")
     assert not at.exception, f"Cycling segments raised: {at.exception}"
     captions = " ".join(c.value for c in at.caption)
-    assert "positive = headwind" in captions  # the D30 sign, on the view
-    assert "ride's start cell" in captions  # the spatial caveat, displayed
+    app = load_app_module()
+    assert app.HEADWIND_SIGN_NOTE in captions  # the D30 sign + spatial caveat, on the view
     assert "Winding segment" not in captions  # straight course: no caveat
     table = at.dataframe[0].value
     assert "headwind_mph" in table.columns
