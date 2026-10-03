@@ -5,7 +5,7 @@
 | **Status** | Finalized — approved for implementation |
 | **Version** | 1.0 |
 | **Date** | July 4, 2026 |
-| **Repository** | `running-analytics-pipeline` |
+| **Repository** | `fitness-analytics` |
 | **MVP Definition** | Phases 0–4 (Release 1.0) |
 
 ---
@@ -154,7 +154,7 @@ Running data is never written into `habit_focus_db`.
 ## 5. Repository Structure (Final)
 
 ```text
-running-analytics-pipeline/
+fitness-analytics/
 ├── compose.yml
 ├── .env.example
 ├── .gitignore
@@ -215,7 +215,7 @@ Per D4, the dbt project lives in `dbt/` and all dbt commands are wrapped in Make
 
 ### Tasks
 
-* [ ] Create the `running-analytics-pipeline` repository with `.gitignore`, `.env.example`, README stub, and dependency configuration
+* [ ] Create the `fitness-analytics` repository with `.gitignore`, `.env.example`, README stub, and dependency configuration
 * [ ] Add project-owned `compose.yml` with PostgreSQL per D2, including a database healthcheck
 * [ ] Create the five schemas per D3 via `sql/bootstrap.sql`
 * [ ] Register a Strava API application; complete the initial OAuth authorization flow with read scope for the athlete's activities
