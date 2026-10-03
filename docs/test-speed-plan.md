@@ -275,6 +275,34 @@ The order does not change. Phase 3 stays ahead of Phase 4.
   band tests build the drift chain. The other 22 tests can each save
   at most about 2 s.
 
+## Found during Phase 1 — deadlock inside `dbt build`
+
+The full suite failed twice during Phase 1, each time in a different
+test. The test changes were not the cause. The cause was a Postgres
+deadlock inside one `dbt build`.
+
+- **What happens.** dbt replaces a view by swapping in a new one, then
+  dropping the old one with `CASCADE`. The cascade also drops the old
+  views downstream of it. Since C3, `int_segment_efforts` reads
+  `stg_weather__hourly` directly and `stg_strava__activities` through
+  two other views. So the two staging drops lock the same views in
+  different orders. When both drops start at the same moment, Postgres
+  stops one of them with "deadlock detected".
+- **How often.** 5 deadlocks in 93 builds, all in builds with cycling
+  fixtures. One of the five was on the tree without the Phase 1
+  changes. The 32 builds before them had none.
+- **Proof of the cause.** Two database sessions dropped two views of
+  the same shape at the same moment. Plain drops: 45 deadlocks in 300
+  rounds. With the lock described below: 0 in 300.
+- **Fix.** `dbt/macros/drop_view.sql` makes every view drop take one
+  advisory lock in the same statement. The drops then run one at a
+  time. No model and no output changes.
+  `test_view_drops_take_the_cascade_lock` pins the lock on the SQL
+  that dbt sends (red before the macro existed). The pin adds one
+  integration test, so the running domain now has 10 tests.
+- **Reach.** `make dbt-build` on the real database sends the same
+  statements, so the fix also covers the daily build.
+
 ---
 
 ## Claude Code kickoff prompt (Phases 0–2)

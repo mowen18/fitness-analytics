@@ -14,6 +14,7 @@ All coordinates are deliberately fake.
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1640,3 +1641,24 @@ def test_effort_speed_formula_and_pins(db):
     db.commit()
     result = run_dbt("test", "--select", selector)
     assert result.returncode == 0, f"mart-core speed lockstep pin still failing:\n{result.stdout}"
+
+
+@pytest.mark.integration
+def test_view_drops_take_the_cascade_lock(db):
+    # dbt replaces a view by swapping in a new one and dropping the old
+    # one with CASCADE. Two such drops at the same moment can deadlock:
+    # since C3, int_segment_efforts reads stg_weather__hourly directly
+    # and stg_strava__activities through two other views, so the two
+    # cascades lock the same downstream views in different orders.
+    # macros/drop_view.sql makes every view drop take one advisory lock
+    # first, in the same statement, so the cascades run one at a time.
+    # A dbt upgrade that stops dispatching to that macro would bring
+    # the deadlock back with every model still green — so the lock is
+    # pinned on the SQL dbt really sends (red before the macro existed).
+    result = run_dbt("--debug", "run", "--select", "stg_weather__hourly")
+    assert result.returncode == 0, f"dbt run failed:\n{result.stdout[-4000:]}"
+
+    drops = re.findall(r"drop view if exists", result.stdout)
+    locked = re.findall(r"pg_advisory_xact_lock\([^;]*\);\s*drop view if exists", result.stdout)
+    assert drops, "no view drop found in the dbt debug output"
+    assert len(locked) == len(drops), "a view drop ran without the cascade lock"

@@ -238,6 +238,18 @@
   assert those constants instead of phrases. D17 unchanged;
   enforcement moved from phrase match to constant check. Running
   views and their phrase assertions untouched.
+- dbt view-drop deadlock fix (2026-10-03, branch test-speed). Since
+  C3, two concurrent `drop view ... __dbt_backup cascade` statements
+  (stg_strava__activities / stg_weather__hourly) could deadlock:
+  int_segment_efforts reads weather directly and activities through
+  two views, so the cascades lock the shared downstream views in
+  different orders. It failed about 5% of test builds and could hit
+  `make dbt-build`. Fix: dbt/macros/drop_view.sql overrides
+  postgres__drop_view to take one transaction-scoped advisory lock in
+  the same statement as the drop, so view drops run one at a time. No
+  model, schema, or output change. Pinned by
+  test_view_drops_take_the_cascade_lock (red first). Do not remove
+  the macro; re-run the pin after any dbt-postgres upgrade.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and
