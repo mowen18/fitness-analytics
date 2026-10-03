@@ -119,11 +119,27 @@ make dbt-test         # dbt tests only
 make dbt-freshness    # source freshness (raw fetched_at ages)
 make dbt-docs         # generate + serve dbt documentation locally
 make dbt-dag          # regenerate the dbt DAG diagram embedded in this README
-make test             # pytest (all external HTTP mocked; DB-integration
-                      # tests skip visibly when Postgres is down)
+make test             # full pytest suite on 4 parallel workers (all external
+                      # HTTP mocked; DB-integration tests skip visibly when
+                      # Postgres is down)
+make test-serial      # the same full suite in one process — for debugging
+make test-fast        # only the tests that need no database
+make test-running     # fast tier + the running dbt integration tests
+make test-cycling     # fast tier + the cycling dbt integration tests
+make test-app-render  # fast tier + the Streamlit render tests
 make lint             # ruff check
 make format           # ruff format
 ```
+
+The test targets are tiers: run the smallest one that covers a change
+while working, and the full suite before a commit. The parallel targets
+use pytest-xdist; each worker gets its own scratch database
+(`running_analytics_test_<worker>`) and its own dbt target folder, so
+workers never share tables and the real warehouse is never touched.
+`PYTEST_WORKERS` sets the worker count (default 4), e.g.
+`make test PYTEST_WORKERS=6`. Every test target first runs `dbt parse`
+to refresh the manifest that the layering guard reads, so the test
+targets need `.env`.
 
 ## Orchestration
 
