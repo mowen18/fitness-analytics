@@ -238,6 +238,18 @@
   assert those constants instead of phrases. D17 unchanged;
   enforcement moved from phrase match to constant check. Running
   views and their phrase assertions untouched.
+- dbt view-drop deadlock fix (2026-10-03, branch test-speed). Since
+  C3, two concurrent `drop view ... __dbt_backup cascade` statements
+  (stg_strava__activities / stg_weather__hourly) could deadlock:
+  int_segment_efforts reads weather directly and activities through
+  two views, so the cascades lock the shared downstream views in
+  different orders. It failed about 5% of test builds and could hit
+  `make dbt-build`. Fix: dbt/macros/drop_view.sql overrides
+  postgres__drop_view to take one transaction-scoped advisory lock in
+  the same statement as the drop, so view drops run one at a time. No
+  model, schema, or output change. Pinned by
+  test_view_drops_take_the_cascade_lock (red first). Do not remove
+  the macro; re-run the pin after any dbt-postgres upgrade.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and
@@ -369,11 +381,35 @@ After the change:
    affect unrelated modules.
 3. Do not retry a failing command more than once without explaining the failure.
 
-Scoped test tier: diffs confined to app/ and tests/test_app.py may use
-`make test-app` (unit + app tests, no integration) before commit. Any
-diff touching src/, dbt/, test fixtures, Makefile, or config still
-requires the full suite (`make test`). The full suite always runs
-before merges and at session end. Scoped runs must report skip counts.
+Test tiers:
+- **While working:** the smallest tier that covers the change.
+  `make test-fast` (no database) covers src/ changes that do not touch
+  SQL. `make test-running` and `make test-cycling` add that domain's
+  dbt integration tests to the fast tier (markers `dbt_running` /
+  `dbt_cycling`). `make test-app-render` adds the Streamlit render
+  tests (marker `app`).
+- **Before each commit:** the full suite (`make test`) for any diff
+  touching src/, dbt/, test fixtures, Makefile, or config. A diff
+  confined to app/ and tests/test_app.py may commit on
+  `make test-app-render`.
+- **Before merge and at session end:** the full suite.
+
+Every integration test in tests/test_dbt_models.py and
+tests/test_app.py carries exactly one domain marker
+(tests/test_marker_guard.py enforces it). The database-backed
+ingestion tests carry none: they run only in the full suite. Tier
+runs must report skip counts.
+
+`make test` and the three domain tiers run on 4 pytest-xdist workers
+(`PYTEST_WORKERS`, never `auto`) with `--dist worksteal` (the default
+scheduling put the slow stream tests on one worker: 135 s against
+76 s for the full suite). Each worker has its own scratch
+database (`running_analytics_test_<worker>`) and its own dbt target
+and log folder (`dbt/target/<worker>`, `dbt/logs/<worker>`); a serial
+run is worker `master`. `make test-serial` runs the same full suite in
+one process, for debugging. Every test target first runs `dbt parse`
+(`make dbt-manifest`, needs .env): test builds no longer write
+dbt/target/manifest.json, and the layering guard reads that file.
 
 ## Ambiguous requests
 When a request has material ambiguity:

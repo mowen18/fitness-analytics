@@ -1,7 +1,8 @@
 # Test suite speed — plan
 
 Status: Draft 2026-10-03, from a code reading of `main` (2026-08-27).
-Not yet measured. Phase 0 checks the numbers before any change.
+Phase 0 measured 2026-10-03 (see "Measurements"). Where the measured
+numbers differ from the estimates below, the measured numbers win.
 
 ## Problem
 
@@ -194,17 +195,157 @@ in parallel from the start.
 
 ## Measurements
 
-(Fill in after Phase 0.)
+Measured 2026-10-03 on `main` at 363f06d. Apple silicon, 12 logical
+CPUs (8 performance cores), Postgres 17 in Docker, dbt-core 1.11.12,
+pytest 9.1.1, Python 3.13.14. The dbt timings ran against a throwaway
+empty database with its own target folder, after the suite finished.
 
 | Measure | Time |
 |---------|------|
-| Full suite, serial | |
-| Non-integration tests only | |
-| `dbt --version` | |
-| `dbt parse` | |
-| One `dbt build`, 4 threads | |
-| One `dbt build`, 8 threads | |
-| Slowest 10 tests (from `--durations`) | |
+| Full suite, serial | 227.9 s (3:47). 164 passed, 0 skipped |
+| Non-integration tests only | 0.5 s (0.8 s wall). 96 passed, 68 deselected |
+| `dbt --version` | 0.76 s (runs: 0.82, 0.76, 0.76) |
+| `dbt parse` | 1.06 s with partial parsing; 1.76 s on a new target folder |
+| One `dbt build`, 4 threads | 3.5 s (runs: 3.42, 3.57, 3.54). dbt reports 2.2–2.3 s of this as model and test work (34 models and seeds, 273 data tests) |
+| One `dbt build`, 8 threads | 3.4 s (runs: 3.38, 3.41) |
+| One `dbt test --select` (extra row) | 1.25 s (runs: 1.26, 1.24). The test itself is 0.10 s |
+| Slowest 10 tests (from `--durations`) | See the list below |
+
+Slowest 10 tests:
+
+| Test | Time |
+|------|------|
+| `test_band_medians_dwell_and_exclusion_ladder` | 37.5 s |
+| `test_drift_decoupling_formula_and_analysis_window` | 34.7 s |
+| `test_every_view_renders_with_populated_marts` (app) | 22.8 s |
+| `test_relationships_test_fails_on_orphan_band_candidate` | 15.3 s |
+| `test_band_candidates_exclusive_exhaustive` | 12.9 s |
+| `test_segment_pin_tests_fail_on_injected_rows` | 9.0 s |
+| `test_wind_pin_tests_fail_on_injected_rows` | 8.8 s |
+| `test_effort_speed_formula_and_pins` | 8.7 s |
+| `test_totality_test_fails_on_unassignable_run` | 6.1 s |
+| `test_ebike_pin_test_fails_on_injected_ebike_row` | 6.1 s |
+
+### What the numbers show
+
+1. **The dbt tests are the whole cost.** The 27 tests that start dbt
+   take 226 s of the 228 s. The other 137 tests take under 2 s in
+   total, including the 41 database tests that do not start dbt.
+2. **Counts.** `test_dbt_models.py` has 21 integration tests, not 19.
+   The suite starts dbt 47 times, not about 45: 27 builds (21 + 6) and
+   20 `dbt test --select` calls.
+3. **Five tests are half the suite, and their cost is data volume.**
+   The five tests that load activity streams take 123 s (54%). A test
+   with small fixtures takes about 3.6 s. So the estimate "the fixtures
+   are tiny, so most of this time is per-query overhead" is right for
+   22 tests and wrong for these five.
+4. **Rough split of the 226 s.** Startup: 47 starts × about 1.2 s =
+   55 s (24%). Build work on small fixtures: 27 builds × about 2.3 s =
+   62 s (27%). Extra work on stream data in the five tests: about
+   100 s (44%). Streamlit renders and the rest: under 10 s.
+5. **The stream cost sits in a few nodes.** The dbt log of the serial
+   run gives the time per node, summed over all 27 builds (375
+   thread-seconds in total). The band chain takes 176 (47%):
+   `fct_run_band_segments` 38, `fct_band_candidates` 26, and 112 in
+   data tests on the views `int_band_window_samples` and
+   `int_run_band_assessment` (each data test runs the view again).
+   `fct_drift_candidates` takes 20. The tests on
+   `int_run_stream_samples` take 19.
+6. **Thread count does not matter** on small fixtures: 3.4 s with 8
+   threads, 3.5 s with 4. Keep 4.
+7. **By domain** (what the Phase 1 tiers will cost, serial): running,
+   9 tests, 122 s (54%). Cycling, 12 tests, 62 s (27%). App, 6 tests,
+   42 s (19%).
+8. **Limit for Phase 2.** The longest test is 37.5 s. No worker count
+   can make the full suite faster than that. The ideal on 4 workers is
+   226 ÷ 4 = 57 s.
+
+### Order of Phases 3 and 4
+
+The order does not change. Phase 3 stays ahead of Phase 4.
+
+- In a build call, startup is 1.06 s of 3.5 s (30%). The work is more
+  than half, so the rule in Phase 0 moves Phase 3 up.
+- In a `dbt test --select` call, startup is about 92%. But the 20
+  calls take only 25 s in total (11% of the suite).
+- Phase 4 can save the import cost of 47 starts: 47 × 0.76 s = 36 s
+  (16%), or about 50 s if it also saves the parse.
+- Phase 3 should start with the five stream tests. The drift test
+  (34.7 s) builds the band chain, which it does not check, and the
+  band tests build the drift chain. The other 22 tests can each save
+  at most about 2 s.
+
+## Found during Phase 1 — deadlock inside `dbt build`
+
+The full suite failed twice during Phase 1, each time in a different
+test. The test changes were not the cause. The cause was a Postgres
+deadlock inside one `dbt build`.
+
+- **What happens.** dbt replaces a view by swapping in a new one, then
+  dropping the old one with `CASCADE`. The cascade also drops the old
+  views downstream of it. Since C3, `int_segment_efforts` reads
+  `stg_weather__hourly` directly and `stg_strava__activities` through
+  two other views. So the two staging drops lock the same views in
+  different orders. When both drops start at the same moment, Postgres
+  stops one of them with "deadlock detected".
+- **How often.** 5 deadlocks in 93 builds, all in builds with cycling
+  fixtures. One of the five was on the tree without the Phase 1
+  changes. The 32 builds before them had none.
+- **Proof of the cause.** Two database sessions dropped two views of
+  the same shape at the same moment. Plain drops: 45 deadlocks in 300
+  rounds. With the lock described below: 0 in 300.
+- **Fix.** `dbt/macros/drop_view.sql` makes every view drop take one
+  advisory lock in the same statement. The drops then run one at a
+  time. No model and no output changes.
+  `test_view_drops_take_the_cascade_lock` pins the lock on the SQL
+  that dbt sends (red before the macro existed). The pin adds one
+  integration test, so the running domain now has 10 tests.
+- **Reach.** `make dbt-build` on the real database sends the same
+  statements, so the fix also covers the daily build.
+
+## Phase 2 result
+
+Measured 2026-10-03, after the deadlock fix. The suite has 166 tests:
+the 164 from Phase 0, the marker guard, and the view-drop pin.
+
+| Run | Result | Time |
+|-----|--------|------|
+| `make test-serial` | 166 passed, 0 skipped | 232 s |
+| `make test`, 4 workers, default scheduling | 166 passed, 0 skipped | 135 s |
+| `make test`, 4 workers, `--dist worksteal` (final) | 166 passed, 0 skipped | 73 s |
+| Trial, 6 workers, default scheduling | 166 passed | 85 s |
+| Trial, 8 workers, default scheduling | 166 passed | 64 s |
+| `make test-running`, 4 workers | 107 passed | 59 s (123 s serial) |
+| `make test-cycling`, 4 workers | 109 passed | 25 s (63 s serial) |
+| `make test-app-render`, 4 workers | 103 passed | 30 s (43 s serial) |
+
+- **Proof.** The serial run and the 4-worker run give the same list of
+  tests and outcomes: 166 tests, all passed, no difference. The
+  comparison used the junit XML file of each run. It was done for the
+  default scheduling and again for `worksteal`.
+- **Scheduling.** With the default scheduling, the suite was only 1.7
+  times faster. xdist hands out tests in chunks of consecutive tests.
+  The slow stream tests are next to each other in
+  `test_dbt_models.py`, so one worker got most of them. `worksteal`
+  lets an idle worker take waiting tests from a busy worker. The suite
+  is then 3.2 times faster on the same 4 workers.
+- **Worker count.** It stays at 4. The trials at 6 and 8 workers used
+  the default scheduling only. They do not show whether more workers
+  help with `worksteal`.
+- **Running tier.** It takes 59 s with either scheduling. Its limit is
+  its longest test, which also runs slower while the other workers are
+  busy. Phase 3 is the way to make it shorter.
+- **Layering guard.** Test builds now write to `dbt/target/<worker>`.
+  So every test target first runs `dbt parse` (`make dbt-manifest`).
+  This refreshes `dbt/target/manifest.json`, which the layering guard
+  reads.
+- **Database name.** One helper in `tests/conftest.py`,
+  `scratch_db_name()`, gives the name to the session fixture, to
+  `run_dbt`, and to the app render helper. It reads the worker id that
+  xdist sets in each worker process.
+- **Reported, not changed.** `README.md` does not list the new test
+  targets. The 41 database tests for ingestion have no domain marker,
+  so they run only in the full suite.
 
 ---
 

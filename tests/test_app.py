@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 import streamlit as st
 
+from conftest import scratch_db_name
 from test_dbt_models import (
     db,  # noqa: F401 — shared truncating fixture
     drift_run,
@@ -32,7 +33,6 @@ from test_dbt_models import (
 )
 
 APP_PATH = Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py"
-TEST_DB = "running_analytics_test"
 VIEW_NAMES = [
     "Aerobic efficiency",
     "Weekly training",
@@ -147,7 +147,7 @@ def render(view: str):
     from streamlit.testing.v1 import AppTest
 
     st.cache_data.clear()  # never let one test's frames leak into the next
-    os.environ["POSTGRES_DB"] = TEST_DB  # Settings: env beats .env
+    os.environ["POSTGRES_DB"] = scratch_db_name()  # Settings: env beats .env
     try:
         at = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
         at.sidebar.radio[0].set_value(view)
@@ -157,6 +157,7 @@ def render(view: str):
 
 
 @pytest.mark.integration
+@pytest.mark.app
 def test_every_view_explains_empty_marts_without_crashing(db):  # noqa: F811
     result = run_dbt("build")
     assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
@@ -169,6 +170,7 @@ def test_every_view_explains_empty_marts_without_crashing(db):  # noqa: F811
 
 
 @pytest.mark.integration
+@pytest.mark.app
 def test_every_view_renders_with_populated_marts(db):  # noqa: F811
     drift_run(db, 1, day="2026-06-15")
     insert_stream(db, 1, samples=steady_stream())
@@ -201,6 +203,7 @@ def test_every_view_renders_with_populated_marts(db):  # noqa: F811
 
 
 @pytest.mark.integration
+@pytest.mark.app
 def test_segment_view_gates_picker_and_captions_exclusions(db):  # noqa: F811
     # C2 acceptance criteria 3 and 4 at the view layer: the picker
     # offers only >= 5-effort segments, the short-segment caveat
@@ -257,6 +260,7 @@ NORTH_ENDS = {"start_latlng": [12.34, -56.78], "end_latlng": [12.35, -56.78]}
 
 
 @pytest.mark.integration
+@pytest.mark.app
 def test_segment_view_headwind_context_and_sign_caption(db):  # noqa: F811
     # C3 (D30) at the view layer: headwind context renders with its
     # sign convention stated on the view (the D17 idiom) plus the
@@ -291,6 +295,7 @@ def test_segment_view_headwind_context_and_sign_caption(db):  # noqa: F811
 
 
 @pytest.mark.integration
+@pytest.mark.app
 def test_segment_view_winding_caption_renders(db):  # noqa: F811
     # C3 (D30): sinuosity above the var flips the displayed winding
     # caveat — flagged, never a filter, so everything else still shows.
@@ -316,6 +321,7 @@ def test_segment_view_winding_caption_renders(db):  # noqa: F811
 
 
 @pytest.mark.integration
+@pytest.mark.app
 def test_segment_view_degrades_without_wind_direction(db):  # noqa: F811
     # C3 acceptance criterion 5: with no wind direction anywhere (the
     # exact C2 data shape — pre-backfill), the view renders the
