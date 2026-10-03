@@ -303,6 +303,50 @@ deadlock inside one `dbt build`.
 - **Reach.** `make dbt-build` on the real database sends the same
   statements, so the fix also covers the daily build.
 
+## Phase 2 result
+
+Measured 2026-10-03, after the deadlock fix. The suite has 166 tests:
+the 164 from Phase 0, the marker guard, and the view-drop pin.
+
+| Run | Result | Time |
+|-----|--------|------|
+| `make test-serial` | 166 passed, 0 skipped | 232 s |
+| `make test`, 4 workers, default scheduling | 166 passed, 0 skipped | 135 s |
+| `make test`, 4 workers, `--dist worksteal` (final) | 166 passed, 0 skipped | 73 s |
+| Trial, 6 workers, default scheduling | 166 passed | 85 s |
+| Trial, 8 workers, default scheduling | 166 passed | 64 s |
+| `make test-running`, 4 workers | 107 passed | 59 s (123 s serial) |
+| `make test-cycling`, 4 workers | 109 passed | 25 s (63 s serial) |
+| `make test-app-render`, 4 workers | 103 passed | 30 s (43 s serial) |
+
+- **Proof.** The serial run and the 4-worker run give the same list of
+  tests and outcomes: 166 tests, all passed, no difference. The
+  comparison used the junit XML file of each run. It was done for the
+  default scheduling and again for `worksteal`.
+- **Scheduling.** With the default scheduling, the suite was only 1.7
+  times faster. xdist hands out tests in chunks of consecutive tests.
+  The slow stream tests are next to each other in
+  `test_dbt_models.py`, so one worker got most of them. `worksteal`
+  lets an idle worker take waiting tests from a busy worker. The suite
+  is then 3.2 times faster on the same 4 workers.
+- **Worker count.** It stays at 4. The trials at 6 and 8 workers used
+  the default scheduling only. They do not show whether more workers
+  help with `worksteal`.
+- **Running tier.** It takes 59 s with either scheduling. Its limit is
+  its longest test, which also runs slower while the other workers are
+  busy. Phase 3 is the way to make it shorter.
+- **Layering guard.** Test builds now write to `dbt/target/<worker>`.
+  So every test target first runs `dbt parse` (`make dbt-manifest`).
+  This refreshes `dbt/target/manifest.json`, which the layering guard
+  reads.
+- **Database name.** One helper in `tests/conftest.py`,
+  `scratch_db_name()`, gives the name to the session fixture, to
+  `run_dbt`, and to the app render helper. It reads the worker id that
+  xdist sets in each worker process.
+- **Reported, not changed.** `README.md` does not list the new test
+  targets. The 41 database tests for ingestion have no domain marker,
+  so they run only in the full suite.
+
 ---
 
 ## Claude Code kickoff prompt (Phases 0–2)

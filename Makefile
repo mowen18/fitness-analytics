@@ -6,6 +6,17 @@ VENV := .venv/bin
 # the committed example; .env supplies connection values via env_var().
 DBT = cd dbt && set -a && . ../.env && set +a && ../$(VENV)/dbt
 
+# pytest-xdist workers for the parallel test targets. Each worker has
+# its own scratch database and dbt target folder. A dbt build already
+# runs 4 threads, so 4 workers means up to 16 queries at once — raise
+# this only after a trial run shows spare capacity; never `auto`.
+# worksteal lets an idle worker take waiting tests from a busy one.
+# The default scheduling hands out consecutive tests in chunks, which
+# put the slow stream tests on one worker (full suite on 4 workers:
+# 135 s default, 76 s worksteal).
+PYTEST_WORKERS ?= 4
+PYTEST_PARALLEL = -n $(PYTEST_WORKERS) --dist worksteal
+
 # ── Airflow (v1.5): thin layer, own venv — never in project deps ──────
 AIRFLOW_VENV     := $(HOME)/.venvs/airflow
 AIRFLOW_HOME_DIR := $(HOME)/airflow
@@ -25,8 +36,10 @@ AIRFLOW_ENV := PATH=$(AIRFLOW_VENV)/bin:$$PATH \
 .PHONY: help up down bootstrap athlete authorize sync-activities reconcile \
 	backfill-coordinates sync-weather reconcile-weather sync-streams \
 	sync-segment-efforts \
-	dbt-profile dbt-build dbt-test dbt-freshness dbt-docs dbt-dag app all \
-	test test-app test-fast test-running test-cycling test-app-render \
+	dbt-profile dbt-build dbt-test dbt-freshness dbt-docs dbt-dag \
+	dbt-manifest app all \
+	test test-serial test-app test-fast test-running test-cycling \
+	test-app-render \
 	lint format airflow-install airflow-start
 
 help:
@@ -111,24 +124,33 @@ airflow-start:     ## airflow standalone (AIRFLOW_HOME=~/airflow, DAGs from orch
 
 all: sync-activities backfill-coordinates sync-weather sync-streams sync-segment-efforts dbt-build  ## full refresh: all syncs + dbt
 
-test:
+# Test builds write to dbt/target/<worker>, so nothing in a test run
+# refreshes dbt/target/manifest.json — the file the layering guard
+# (tests/test_dbt_layering.py) reads. Every test target parses first.
+dbt-manifest: dbt-profile  ## refresh dbt/target/manifest.json for the layering guard
+	$(DBT) parse --profiles-dir .
+
+test: dbt-manifest         ## full suite on PYTEST_WORKERS parallel workers
+	$(VENV)/pytest $(PYTEST_PARALLEL)
+
+test-serial: dbt-manifest  ## full suite in one process — for debugging
 	$(VENV)/pytest
 
-test-app:  ## unit + app tests — valid only for diffs confined to app/
+test-app: dbt-manifest  ## unit + app tests — valid only for diffs confined to app/
 	$(VENV)/pytest -m "not integration" -q
 	$(VENV)/pytest tests/test_app.py -q
 
-test-fast:  ## no-database tier — src/ changes that do not touch SQL
+test-fast: dbt-manifest  ## no-database tier — src/ changes that do not touch SQL
 	$(VENV)/pytest -m "not integration" -q
 
-test-running:  ## fast tier + the running dbt integration tests
-	$(VENV)/pytest -m "not integration or dbt_running" -q
+test-running: dbt-manifest  ## fast tier + the running dbt integration tests
+	$(VENV)/pytest $(PYTEST_PARALLEL) -m "not integration or dbt_running" -q
 
-test-cycling:  ## fast tier + the cycling dbt integration tests
-	$(VENV)/pytest -m "not integration or dbt_cycling" -q
+test-cycling: dbt-manifest  ## fast tier + the cycling dbt integration tests
+	$(VENV)/pytest $(PYTEST_PARALLEL) -m "not integration or dbt_cycling" -q
 
-test-app-render:  ## fast tier + the Streamlit render tests
-	$(VENV)/pytest -m "not integration or app" -q
+test-app-render: dbt-manifest  ## fast tier + the Streamlit render tests
+	$(VENV)/pytest $(PYTEST_PARALLEL) -m "not integration or app" -q
 
 lint:
 	$(VENV)/ruff check src tests

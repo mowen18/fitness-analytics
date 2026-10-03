@@ -400,6 +400,17 @@ tests/test_app.py carries exactly one domain marker
 ingestion tests carry none: they run only in the full suite. Tier
 runs must report skip counts.
 
+`make test` and the three domain tiers run on 4 pytest-xdist workers
+(`PYTEST_WORKERS`, never `auto`) with `--dist worksteal` (the default
+scheduling put the slow stream tests on one worker: 135 s against
+76 s for the full suite). Each worker has its own scratch
+database (`running_analytics_test_<worker>`) and its own dbt target
+and log folder (`dbt/target/<worker>`, `dbt/logs/<worker>`); a serial
+run is worker `master`. `make test-serial` runs the same full suite in
+one process, for debugging. Every test target first runs `dbt parse`
+(`make dbt-manifest`, needs .env): test builds no longer write
+dbt/target/manifest.json, and the layering guard reads that file.
+
 ## Ambiguous requests
 When a request has material ambiguity:
 

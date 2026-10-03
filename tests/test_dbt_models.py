@@ -3,7 +3,7 @@
 The real warehouse currently has no outdoor or HR-carrying runs, so the
 weather-matching and eligibility logic in the dbt models can only be
 exercised with synthetic fixtures. These tests seed the scratch DB
-(conftest's running_analytics_test), run the real dbt project against it
+(conftest's scratch_db_name()), run the real dbt project against it
 in a subprocess, and assert model outputs; the last test proves the dbt
 test suite FAILS when known-invalid fixtures are introduced — Phase 3
 acceptance criterion 6.
@@ -24,12 +24,12 @@ from pathlib import Path
 
 import pytest
 
+from conftest import scratch_db_name, xdist_worker
 from running_pipeline.config import Settings
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DBT_DIR = REPO_ROOT / "dbt"
 DBT_BIN = Path(sys.executable).parent / "dbt"
-TEST_DB = "running_analytics_test"  # the conftest scratch database
 
 
 @pytest.fixture
@@ -45,7 +45,10 @@ def db(integration_db):
 
 
 def run_dbt(*args: str) -> subprocess.CompletedProcess:
-    """Run dbt against the scratch DB by overriding the profile env vars."""
+    """Run dbt against this worker's scratch DB by overriding the profile
+    env vars. Each pytest-xdist worker also gets its own dbt target and
+    log folder, so parallel workers never overwrite each other's
+    manifest or partial-parse file."""
     if not (DBT_DIR / "profiles.yml").exists():
         shutil.copy(DBT_DIR / "profiles.yml.example", DBT_DIR / "profiles.yml")
     settings = Settings()  # integration tests intentionally read .env
@@ -55,10 +58,12 @@ def run_dbt(*args: str) -> subprocess.CompletedProcess:
         "POSTGRES_PORT": str(settings.postgres_port),
         "POSTGRES_USER": settings.postgres_user,
         "POSTGRES_PASSWORD": settings.postgres_password.get_secret_value(),
-        "POSTGRES_DB": TEST_DB,
+        "POSTGRES_DB": scratch_db_name(),
     }
+    worker = xdist_worker()
+    paths = ["--target-path", f"target/{worker}", "--log-path", f"logs/{worker}"]
     return subprocess.run(
-        [str(DBT_BIN), *args, "--profiles-dir", "."],
+        [str(DBT_BIN), *args, "--profiles-dir", ".", *paths],
         cwd=DBT_DIR,
         env=env,
         capture_output=True,

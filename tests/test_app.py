@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 import streamlit as st
 
+from conftest import scratch_db_name
 from test_dbt_models import (
     db,  # noqa: F401 — shared truncating fixture
     drift_run,
@@ -32,7 +33,6 @@ from test_dbt_models import (
 )
 
 APP_PATH = Path(__file__).resolve().parent.parent / "app" / "streamlit_app.py"
-TEST_DB = "running_analytics_test"
 VIEW_NAMES = [
     "Aerobic efficiency",
     "Weekly training",
@@ -147,7 +147,7 @@ def render(view: str):
     from streamlit.testing.v1 import AppTest
 
     st.cache_data.clear()  # never let one test's frames leak into the next
-    os.environ["POSTGRES_DB"] = TEST_DB  # Settings: env beats .env
+    os.environ["POSTGRES_DB"] = scratch_db_name()  # Settings: env beats .env
     try:
         at = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
         at.sidebar.radio[0].set_value(view)
