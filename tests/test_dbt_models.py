@@ -156,6 +156,7 @@ def insert_weather(
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_dbt_build_matches_weather_and_flags_eligibility(db):
     # Outdoor run at 09:47 UTC with HR — the case real data cannot cover.
     insert_activity(db, 1, average_heartrate=145.0)
@@ -241,6 +242,7 @@ def outdoor_run(
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_efficiency_marts_compute_metrics_exclusions_and_bands(db):
     # ── Week of Mon 2026-06-01: two valid runs (sufficient per D12).
     # temp_c values are chosen so the staged 1-dp value lands exactly on
@@ -545,6 +547,7 @@ def drift_run(db, activity_id, *, day, moving_time=3600, hr=145.0, **kwargs):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_drift_decoupling_formula_and_analysis_window(db):
     # Two clean runs in one week: decoupling = (1 - HR1/HR2) * 100
     # exactly, because speed is constant across the window. The second
@@ -617,6 +620,7 @@ def test_drift_decoupling_formula_and_analysis_window(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_dbt_tests_fail_on_known_invalid_fixtures(db):
     # Physically impossible: moving time exceeds elapsed time.
     insert_activity(db, 1, moving_time=4000, elapsed_time=3000)
@@ -633,6 +637,7 @@ def test_dbt_tests_fail_on_known_invalid_fixtures(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_relationships_test_fails_on_orphan_drift_candidate(db):
     # The fct_drift_candidates -> fct_runs relationships test was proven
     # red-first once (commit 6e478af); this re-proves it on every run.
@@ -659,6 +664,7 @@ def test_relationships_test_fails_on_orphan_drift_candidate(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_relationships_test_fails_on_orphan_band_candidate(db):
     # The fct_band_candidates -> fct_runs relationships test, proven red
     # the same way as the drift one (commit f8c7185): both models descend
@@ -689,6 +695,7 @@ def test_relationships_test_fails_on_orphan_band_candidate(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_totality_test_fails_on_unassignable_run(db):
     # The D14 ladder totality test was proven red-first on both arms
     # (commit 2c2dba2: a matched run without feels-like -> 0 assignments,
@@ -722,6 +729,7 @@ def test_totality_test_fails_on_unassignable_run(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_band_candidates_exclusive_exhaustive(db):
     # D22 contract: every band candidate carries EXACTLY ONE of
     # (>= 1 band segment, exclusion_reason) — mutually exclusive,
@@ -762,6 +770,7 @@ def test_band_candidates_exclusive_exhaustive(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_band_medians_dwell_and_exclusion_ladder(db):
     # Acceptance criterion 3: constant 3.0 m/s, HR stepping 135 -> 145
     # at the band-window midpoint -> two decade bands, near-equal dwell,
@@ -940,6 +949,7 @@ def outdoor_ride(
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_ride_grain_indoor_flags_and_ebike_absence(db):
     # C1 acceptance criterion 2: one row per D23 ride, e-bike types
     # absent, indoor flagged. Indoor rides get a matching observation at
@@ -994,6 +1004,7 @@ def test_ride_grain_indoor_flags_and_ebike_absence(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_ride_exclusion_ladder_first_failing_rule(db):
     # C1 acceptance criterion 3: every invalid ride carries the first
     # failing D25 rule; HR absence is NOT an exclusion (unlike running).
@@ -1025,6 +1036,7 @@ def test_ride_exclusion_ladder_first_failing_rule(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_weekly_cycling_sufficiency_flips_at_threshold(db):
     # C1 acceptance criterion 4: is_sufficient flips exactly at the
     # min_weekly_valid_rides threshold (2), counting VALID rides only.
@@ -1052,6 +1064,7 @@ def test_weekly_cycling_sufficiency_flips_at_threshold(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_ebike_pin_test_fails_on_injected_ebike_row(db):
     # The D23 e-bike pin, proven red the injection way (the orphan
     # pattern above): the grain filter renders from ride_sport_types, so
@@ -1146,6 +1159,7 @@ def insert_segment_effort(
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_segment_sufficiency_flips_at_five_efforts(db):
     # C2 acceptance criterion 3, mart side: is_sufficient flips exactly
     # at segment_trend_min_efforts (5); the rolling median and the
@@ -1183,6 +1197,7 @@ def test_segment_sufficiency_flips_at_five_efforts(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_short_segment_flag_flips_at_median_120s(db):
     # C2 acceptance criterion 3, caveat side: short_segment flips
     # exactly at short_segment_seconds (120), strict < — a median of
@@ -1210,6 +1225,7 @@ def test_short_segment_flag_flips_at_median_120s(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_virtual_effort_flagged_in_core_absent_from_mart_and_counted(db):
     # C2 acceptance criterion 4: a VirtualRide effort is flagged in
     # fct_segment_efforts, absent from mart_segment_trend, counted in
@@ -1252,6 +1268,7 @@ def test_virtual_effort_flagged_in_core_absent_from_mart_and_counted(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_segment_pin_tests_fail_on_injected_rows(db):
     # The two NEW cross-relation pins, proven red the injection way (the
     # e-bike archetype above): the mart's virtual holdout and the
@@ -1316,6 +1333,7 @@ def haversine_m(lat1, lon1, lat2, lon2):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_winding_flag_flips_exactly_at_sinuosity_threshold(db):
     # C3 acceptance criterion 3, plus the D30 bearing pins: the
     # winding_segment flag flips exactly at winding_sinuosity_max (1.3),
@@ -1377,6 +1395,7 @@ def test_winding_flag_flips_exactly_at_sinuosity_threshold(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_headwind_sign_convention_and_effort_hour_match(db):
     # C3 acceptance criterion 1 (the D30 sign matrix, v2.0 verification
     # item 7 verbatim) plus the effort-hour wind match rules. Wind speed
@@ -1507,6 +1526,7 @@ def test_headwind_sign_convention_and_effort_hour_match(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_wind_pin_tests_fail_on_injected_rows(db):
     # The two table-backed C3 pins, proven red the injection way (the
     # C2 archetype): the D30 formula/null pin on core and the mart-core
@@ -1569,6 +1589,7 @@ def test_wind_pin_tests_fail_on_injected_rows(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_cycling
 def test_effort_speed_formula_and_pins(db):
     # Effort speed uses ELAPSED time, the Strava convention for
     # segments (segments are "ranked according to 'Total Elapsed
@@ -1644,6 +1665,7 @@ def test_effort_speed_formula_and_pins(db):
 
 
 @pytest.mark.integration
+@pytest.mark.dbt_running
 def test_view_drops_take_the_cascade_lock(db):
     # dbt replaces a view by swapping in a new one and dropping the old
     # one with CASCADE. Two such drops at the same moment can deadlock:

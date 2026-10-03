@@ -26,7 +26,8 @@ AIRFLOW_ENV := PATH=$(AIRFLOW_VENV)/bin:$$PATH \
 	backfill-coordinates sync-weather reconcile-weather sync-streams \
 	sync-segment-efforts \
 	dbt-profile dbt-build dbt-test dbt-freshness dbt-docs dbt-dag app all \
-	test test-app lint format airflow-install airflow-start
+	test test-app test-fast test-running test-cycling test-app-render \
+	lint format airflow-install airflow-start
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | sed 's/:.*//' | sort
@@ -116,6 +117,18 @@ test:
 test-app:  ## unit + app tests — valid only for diffs confined to app/
 	$(VENV)/pytest -m "not integration" -q
 	$(VENV)/pytest tests/test_app.py -q
+
+test-fast:  ## no-database tier — src/ changes that do not touch SQL
+	$(VENV)/pytest -m "not integration" -q
+
+test-running:  ## fast tier + the running dbt integration tests
+	$(VENV)/pytest -m "not integration or dbt_running" -q
+
+test-cycling:  ## fast tier + the cycling dbt integration tests
+	$(VENV)/pytest -m "not integration or dbt_cycling" -q
+
+test-app-render:  ## fast tier + the Streamlit render tests
+	$(VENV)/pytest -m "not integration or app" -q
 
 lint:
 	$(VENV)/ruff check src tests

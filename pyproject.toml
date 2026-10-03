@@ -44,4 +44,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 markers = [
     "integration: needs the local dockerized Postgres (start it with `make up`)",
+    "dbt_running: dbt integration tests for the running domain (runs, drift, bands, weather matching)",
+    "dbt_cycling: dbt integration tests for the cycling domain (rides, segments, wind)",
+    "app: Streamlit render tests against the scratch database",
 ]

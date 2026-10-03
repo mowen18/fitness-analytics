@@ -381,11 +381,24 @@ After the change:
    affect unrelated modules.
 3. Do not retry a failing command more than once without explaining the failure.
 
-Scoped test tier: diffs confined to app/ and tests/test_app.py may use
-`make test-app` (unit + app tests, no integration) before commit. Any
-diff touching src/, dbt/, test fixtures, Makefile, or config still
-requires the full suite (`make test`). The full suite always runs
-before merges and at session end. Scoped runs must report skip counts.
+Test tiers:
+- **While working:** the smallest tier that covers the change.
+  `make test-fast` (no database) covers src/ changes that do not touch
+  SQL. `make test-running` and `make test-cycling` add that domain's
+  dbt integration tests to the fast tier (markers `dbt_running` /
+  `dbt_cycling`). `make test-app-render` adds the Streamlit render
+  tests (marker `app`).
+- **Before each commit:** the full suite (`make test`) for any diff
+  touching src/, dbt/, test fixtures, Makefile, or config. A diff
+  confined to app/ and tests/test_app.py may commit on
+  `make test-app-render`.
+- **Before merge and at session end:** the full suite.
+
+Every integration test in tests/test_dbt_models.py and
+tests/test_app.py carries exactly one domain marker
+(tests/test_marker_guard.py enforces it). The database-backed
+ingestion tests carry none: they run only in the full suite. Tier
+runs must report skip counts.
 
 ## Ambiguous requests
 When a request has material ambiguity:
