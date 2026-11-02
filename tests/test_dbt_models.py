@@ -914,6 +914,25 @@ def test_band_medians_dwell_and_exclusion_ladder(db):
 # ── Cycling domain (v2.0 Phase C1): D23 grain, D25 ladder, weekly marts ─
 
 
+@pytest.mark.integration
+@pytest.mark.dbt_running
+def test_ride_stream_rows_stay_out_of_the_run_stream_views(db):
+    # v2.4 owner exception to the v2.0 running-model rule: rides now land
+    # in raw_strava.streams, and the run stream views must not carry them.
+    drift_run(db, 1, day="2026-06-15")
+    insert_stream(db, 1, samples=steady_stream())
+    insert_activity(db, 2, sport_type="Ride", start="2026-06-16T09:00:00Z", average_heartrate=145.0)
+    insert_stream(db, 2, samples=steady_stream())
+    db.commit()
+
+    result = run_dbt("build")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    for view in ("int_run_stream_samples", "int_run_stream_state", "int_band_window_samples"):
+        rows = db.execute(f"SELECT DISTINCT activity_id FROM intermediate.{view}").fetchall()
+        assert rows == [(1,)], f"{view} carries non-run rows: {rows}"
+
+
 def outdoor_ride(
     db,
     activity_id,

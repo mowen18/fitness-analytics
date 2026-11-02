@@ -92,7 +92,8 @@ models:
 
   - name: int_run_stream_samples
     description: >
-      One row per successfully loaded activity and aligned sample index:
+      One row per successfully loaded run and aligned sample index (runs
+      only: rides also land in raw_strava.streams, D31):
       the raw parallel stream arrays (time / heartrate / velocity_smooth
       / moving / grade_smooth) unnested by shared index, so downstream
       SQL reads samples relationally. is_valid_sample marks
@@ -128,8 +129,9 @@ models:
 
   - name: int_run_stream_state
     description: >
-      One row per stream-fetch attempt (activity grain —
-      raw_strava.streams is keyed by activity_id): the fetch status and
+      One row per run's stream-fetch attempt (activity grain —
+      raw_strava.streams is keyed by activity_id; rides also land there,
+      D31, and are filtered out here): the fetch status and
       whether the payload carries the arrays drift analysis requires.
       Exists so fct_drift_candidates can distinguish "never fetched" /
       "unavailable" / "failed" / "arrays missing" without reading the
