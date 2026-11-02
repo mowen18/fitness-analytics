@@ -1843,3 +1843,155 @@ def test_power_sample_pin_tests_fail_on_injected_rows(db):
 
         result = run_dbt("test", "--select", pin)
         assert result.returncode == 0, f"{pin} still failing:\n{result.stdout}"
+
+
+def grid_rows(db, activity_id):
+    return db.execute(
+        """
+        SELECT t_sec, watts_observed, watts, fill_reason, distance_m
+        FROM intermediate.int_ride_power_grid
+        WHERE activity_id = %s
+        ORDER BY t_sec
+        """,
+        (activity_id,),
+    ).fetchall()
+
+
+def fill_reasons(db, activity_id):
+    return [row[3] for row in grid_rows(db, activity_id)]
+
+
+def grid_watts(db, activity_id):
+    return [row[2] for row in grid_rows(db, activity_id)]
+
+
+def add_power_fixture(db, activity_id, watts, *, step_m=5.0, elapsed=None, distance=None):
+    """Consecutive seconds at step_m per second, unless told otherwise."""
+    elapsed = list(range(len(watts))) if elapsed is None else elapsed
+    distance = [t * step_m for t in elapsed] if distance is None else distance
+    power_ride(db, activity_id, day=f"2026-10-{activity_id:02d}")
+    insert_power_stream(db, activity_id, elapsed=elapsed, watts=watts, distance=distance)
+
+
+@pytest.mark.integration
+@pytest.mark.dbt_cycling
+def test_ride_power_grid_fill_rule(db):
+    n = None
+    add_power_fixture(db, 1, [200, 210, 205, n, n, 0, 0, 180])  # the spec's ride A
+    add_power_fixture(db, 2, [100, n, n, n, 100])  # exactly 3 s
+    add_power_fixture(db, 3, [100, n, n, n, n, 100])  # 4 s, distance advancing
+    add_power_fixture(db, 4, [100] + [n] * 60 + [100], step_m=0.0)  # 60 s, distance flat
+    add_power_fixture(db, 5, [n, n, 100, 100])  # start of ride, short
+    add_power_fixture(db, 6, [100, 100] + [n] * 10)  # end of ride, long
+    add_power_fixture(db, 7, [100, n, n])  # end of ride, short: first match is held
+    add_power_fixture(db, 8, [0, n, 0])  # holding a real 0 W keeps 0, never NULL
+    # Missing seconds in the time stream, the only form seen live. A gap of
+    # G seconds is a run of G-1 seconds.
+    add_power_fixture(db, 9, [100, 110, 120, 130], elapsed=[0, 1, 6, 7])  # 4 s moving
+    add_power_fixture(db, 10, [100, 110, 120], elapsed=[0, 1, 5])  # 3 s
+    add_power_fixture(db, 11, [100, 110, 120], elapsed=[0, 1, 61], step_m=0.0)  # 59 s stop
+    # Speed across the run is the bounding rows' distance over t_sec.
+    add_power_fixture(db, 12, [100, n, n, n, n, 100], distance=[0, 0, 0, 0, 0, 10.0])  # = 2.0
+    add_power_fixture(db, 13, [100, n, n, n, n, 100], distance=[0, 0, 0, 0, 0, 9.4])  # 1.88
+    # A NULL distance on a bounding row: speed unknown, so missing, not stopped.
+    add_power_fixture(db, 14, [100, n, n, n, n, 100], distance=[None, 0, 0, 0, 0, 0])
+    # Bounding rows have non-NULL watts: a NULL-watts sample never bounds.
+    add_power_fixture(db, 15, [100, n, n, n, n, 100], distance=[0, 500, 500, 500, 500, 0])
+    # Real power but no watts array at all: every second is missing.
+    power_ride(db, 16, day="2026-10-16")
+    insert_power_stream(db, 16, elapsed=[0, 1], watts=None, distance=[0.0, 5.0])
+    # None of these may reach the grid.
+    power_ride(db, 20, day="2026-10-20", device_watts=False)
+    insert_power_stream(db, 20, elapsed=[0], watts=[111], distance=[0.0])
+    power_ride(db, 21, day="2026-10-21", sport_type="Run")
+    insert_power_stream(db, 21, elapsed=[0], watts=[111], distance=[0.0])
+    power_ride(db, 22, day="2026-10-22", sport_type="EBikeRide")
+    insert_power_stream(db, 22, elapsed=[0], watts=[111], distance=[0.0])
+    db.commit()
+
+    result = run_dbt("build", "--select", "stg_strava__ride_power_samples+")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    d = Decimal
+    assert grid_rows(db, 1) == [
+        (0, d(200), d(200), "observed", d("0.0")),
+        (1, d(210), d(210), "observed", d("5.0")),
+        (2, d(205), d(205), "observed", d("10.0")),
+        (3, None, d(205), "held", d("15.0")),
+        (4, None, d(205), "held", d("20.0")),
+        (5, d(0), d(0), "observed", d("25.0")),
+        (6, d(0), d(0), "observed", d("30.0")),
+        (7, d(180), d(180), "observed", d("35.0")),
+    ]
+    assert fill_reasons(db, 2) == ["observed", "held", "held", "held", "observed"]
+    assert grid_watts(db, 2) == [100, 100, 100, 100, 100]
+    assert fill_reasons(db, 3) == ["observed"] + ["missing"] * 4 + ["observed"]
+    assert grid_watts(db, 3) == [100, n, n, n, n, 100]
+    assert fill_reasons(db, 4) == ["observed"] + ["stopped"] * 60 + ["observed"]
+    assert grid_watts(db, 4) == [100] + [n] * 60 + [100]
+    assert fill_reasons(db, 5) == ["missing", "missing", "observed", "observed"]
+    assert grid_watts(db, 5) == [n, n, 100, 100]
+    assert fill_reasons(db, 6) == ["observed"] * 2 + ["missing"] * 10
+    assert grid_watts(db, 6) == [100, 100] + [n] * 10
+    assert fill_reasons(db, 7) == ["observed", "held", "held"]
+    assert grid_watts(db, 7) == [100, 100, 100]
+    assert fill_reasons(db, 8) == ["observed", "held", "observed"]
+    assert grid_watts(db, 8) == [0, 0, 0]
+
+    # Grid seconds with no sample carry NULL distance, never interpolated.
+    assert grid_rows(db, 9)[1:3] == [
+        (1, d(110), d(110), "observed", d("5.0")),
+        (2, None, None, "missing", None),
+    ]
+    assert fill_reasons(db, 9) == ["observed"] * 2 + ["missing"] * 4 + ["observed"] * 2
+    assert fill_reasons(db, 10) == ["observed"] * 2 + ["held"] * 3 + ["observed"]
+    assert grid_watts(db, 10) == [100, 110, 110, 110, 110, 120]
+    assert fill_reasons(db, 11) == ["observed"] * 2 + ["stopped"] * 59 + ["observed"]
+
+    assert fill_reasons(db, 12) == ["observed"] + ["missing"] * 4 + ["observed"]  # not below 2.0
+    assert fill_reasons(db, 13) == ["observed"] + ["stopped"] * 4 + ["observed"]  # the ruling
+    assert fill_reasons(db, 14) == ["observed"] + ["missing"] * 4 + ["observed"]
+    assert fill_reasons(db, 15) == ["observed"] + ["stopped"] * 4 + ["observed"]
+    assert fill_reasons(db, 16) == ["missing", "missing"]
+    assert grid_watts(db, 16) == [n, n]
+
+    for excluded in (20, 21, 22):
+        assert grid_rows(db, excluded) == []
+
+
+@pytest.mark.integration
+@pytest.mark.dbt_cycling
+def test_power_grid_pin_tests_fail_on_injected_rows(db):
+    power_ride(db, 1)
+    insert_power_stream(db, 1, elapsed=[0, 1], watts=[200, 210], distance=[0.0, 5.0])
+    power_ride(db, 2, day="2026-10-25", device_watts=False)
+    db.commit()
+    result = run_dbt("build", "--select", "stg_strava__ride_power_samples+")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    relation = "intermediate.int_ride_power_grid"
+    pins = {
+        "assert_ride_power_grid_unique_per_second": "(1, 0, 200, 200, 'observed', 0)",
+        "assert_ride_power_grid_rows_match_last_second": "(1, 999, NULL, NULL, 'missing', NULL)",
+        "assert_ride_power_grid_watts_match_fill_reason": "(1, 2, 200, 999, 'observed', 0)",
+        "assert_ride_power_held_runs_within_max_gap": (
+            "(1, 10, NULL, 5, 'held', 0), (1, 11, NULL, 5, 'held', 0), "
+            "(1, 12, NULL, 5, 'held', 0), (1, 13, NULL, 5, 'held', 0)"
+        ),
+        "assert_power_models_only_real_power_rides": "(2, 0, 5, 5, 'observed', 0)",
+    }
+    for pin, values in pins.items():
+        with view_with_injected_row(db, relation, f"INSERT INTO {relation} VALUES {values}"):
+            result = run_dbt("test", "--select", pin)
+            assert result.returncode != 0, f"{pin} should fail on an injected row"
+            assert pin in result.stdout
+
+        result = run_dbt("test", "--select", pin)
+        assert result.returncode == 0, f"{pin} still failing:\n{result.stdout}"
+    # Missing and stopped seconds carry no power.
+    pin = "assert_ride_power_grid_watts_match_fill_reason"
+    for reason in ("missing", "stopped"):
+        insert_sql = f"INSERT INTO {relation} VALUES (1, 2, NULL, 5, '{reason}', NULL)"
+        with view_with_injected_row(db, relation, insert_sql):
+            result = run_dbt("test", "--select", pin)
+            assert result.returncode != 0, f"{pin} should fail on {reason} with watts"

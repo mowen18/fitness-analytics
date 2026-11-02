@@ -19,6 +19,11 @@ power_model_rows as (
     select activity_id, 'stg_strava__ride_power_samples' as model
     from {{ ref('stg_strava__ride_power_samples') }}
 
+    union all
+
+    select activity_id, 'int_ride_power_grid' as model
+    from {{ ref('int_ride_power_grid') }}
+
 )
 
 select power_model_rows.activity_id, power_model_rows.model

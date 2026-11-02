@@ -394,3 +394,45 @@ models:
         description: >
           Parent ride's first failing D25 rule; NULL when the ride is
           valid. A caveat on the effort's times, never a filter.
+
+  - name: int_ride_power_grid
+    description: >
+      One row per real-power ride per second, 0 to the ride's last t_sec
+      (v2.4, D32). Every second carries exactly one fill_reason. The fill
+      rule, first match wins, applies to each run of consecutive seconds
+      with NULL watts_observed; bounding rows have non-NULL
+      watts_observed. Run length <= power_hold_max_gap_s with a prior
+      observed value -> held at that value. No observed row before or
+      after -> missing. Speed across the bounding rows below
+      power_stopped_speed_mps -> stopped. Otherwise -> missing. A NULL
+      distance on a bounding row means speed is unknown, so the run is
+      missing, never stopped. Known limit: the form of a power dropout is
+      unobserved (no NULL watts in the six rides inspected on 2026-11-02),
+      so a dropout arriving as 0 W is labeled observed. No 0 W detection
+      in this phase.
+    columns:
+      - name: activity_id
+        description: Strava activity id (a real-power ride).
+        tests: [not_null]
+      - name: t_sec
+        description: Seconds since activity start; every second is present.
+        tests: [not_null]
+      - name: watts_observed
+        description: >
+          Power exactly as received, never modified. NULL where the sample
+          has no value or the time stream has no sample for this second.
+      - name: watts
+        description: >
+          The value downstream metrics read: the observed value, or the held
+          value on held seconds. NULL on stopped and missing seconds, never
+          zero. Coasting is a real 0 W and stays 0.
+      - name: fill_reason
+        description: observed / held / stopped / missing.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['observed', 'held', 'stopped', 'missing']
+      - name: distance_m
+        description: Observed cumulative distance, meters; NULL where there is no sample, never interpolated.
+
