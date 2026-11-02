@@ -1,7 +1,18 @@
-with successful_streams as (
+with runs as (
+
+    -- Rides also land in raw_strava.streams (D31); this view is runs only
+    -- (the filter documented in staging YAML; v2.4 owner exception).
+    select activity_id
+    from {{ ref('stg_strava__activities') }}
+    where sport_type in ('Run', 'TrailRun', 'VirtualRun')
+
+),
+
+successful_streams as (
 
     select activity_id, payload, sample_count
     from {{ source('raw_strava', 'streams') }}
+    inner join runs using (activity_id)
     where ingestion_status = 'success'
 
 )

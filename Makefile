@@ -79,7 +79,7 @@ sync-weather:  ## fetch hourly weather for outdoor runs and rides not yet covere
 reconcile-weather:  ## re-fetch weather even for already-cached hours
 	$(VENV)/running-pipeline sync-weather --full
 
-sync-streams:  ## backfill activity streams for fetch-eligible runs (resumable)
+sync-streams:  ## backfill activity streams for fetch-eligible runs and power rides (resumable)
 	$(VENV)/running-pipeline sync-streams
 
 sync-segment-efforts:  ## backfill segment efforts for D23 rides (resumable)

@@ -69,6 +69,14 @@ vars:
   # straight-line bearing misdescribes them — never a filter). Name
   # follows the D30 decision record verbatim.
   winding_sinuosity_max: 1.3
+  # Ride power grid, Revision v2.4 (D32). A run of at most
+  # power_hold_max_gap_s NULL seconds holds the last observed value. A
+  # longer run below power_stopped_speed_mps, measured across its bounding
+  # rows, is stopped. 2.0 is the owner's ruling after reviewing the gaps a
+  # 1.0 threshold called missing (slowing to a stop, averaged into a short
+  # gap); see docs/decisions/v2.4-ride-power-grid.md for its limits.
+  power_hold_max_gap_s: 3
+  power_stopped_speed_mps: 2.0
 
 # Layers map onto the five locked schemas (D3). generate_schema_name is
 # overridden so these names are used exactly, without dbt's default

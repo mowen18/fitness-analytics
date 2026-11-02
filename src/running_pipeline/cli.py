@@ -98,7 +98,7 @@ def sync_activities(full: bool):
 
 @cli.command("sync-streams")
 def sync_streams():
-    """Backfill activity streams for fetch-eligible runs (resumable)."""
+    """Backfill activity streams for fetch-eligible runs and power rides (resumable)."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

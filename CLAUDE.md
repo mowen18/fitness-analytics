@@ -250,6 +250,30 @@
   model, schema, or output change. Pinned by
   test_view_drops_take_the_cascade_lock (red first). Do not remove
   the macro; re-run the pin after any dbt-postgres upgrade.
+- Revision v2.4 complete (2026-11-02, branch ride-power-grid): ride power
+  stream and one-second grid. The owner chose the number: v2.1–v2.3 are
+  not in the plan log (v2.3 is the planned training-load work). D31: rides
+  with device_watts literally true, a D23 ride type, and moving time past
+  the same 20-minute gate (no HR requirement) join the daily sync-streams,
+  after runs, sharing the batch cap, on RIDE_STREAM_TYPES (the five run keys
+  + distance + watts); STREAM_TYPES and run requests are unchanged. No
+  backfill flag or target. D32: stg_strava__ride_power_samples →
+  int_ride_power_grid (ride × second; watts_observed, watts, fill_reason
+  observed / held / stopped / missing, distance_m) →
+  int_ride_power_coverage (no threshold). Vars power_hold_max_gap_s 3 and
+  power_stopped_speed_mps 2.0 (owner ruling from the 14-gap review; first
+  design 1.0). Owner exception to the v2.0 running-model rule: a sport
+  filter on int_run_stream_samples and int_run_stream_state, committed
+  before any ride row existed. Bidirectional EXCEPT ALL on 12 marts, 6 core
+  tables, and the 3 stream views: 21/21 identical. Live: 6 rides, 33,080
+  samples, 37,585 grid seconds (33,080 observed, 154 held, 4,351 stopped,
+  0 missing), coverage 1.0000 on each. Known limit: the form of a power
+  dropout is unobserved, so a dropout arriving as 0 W is labeled observed
+  and coverage 1.0 does not show the meter never dropped out. Never use
+  Strava's average_watts or weighted_average_watts as a cross-check. No
+  metric, mart, or view reads power yet. Open follow-up in PROJECT_PLAN.md:
+  live Strava responses carried no rate-limit headers. Addendum:
+  docs/decisions/v2.4-ride-power-grid.md.
 
 ## Scope constraints — Airflow adoption (v1.5)
 - (a) Airflow owns no state — watermarks, per-item status rows, and
@@ -287,8 +311,9 @@
 - Sync:    `make sync-activities` (incremental) / `make reconcile` (full)
 - Weather: `make sync-weather` (incremental by nature) /
   `make reconcile-weather` (re-fetch cached hours)
-- Streams: `make sync-streams` (resumable; success/unavailable are
-  terminal statuses in raw_strava.streams, failed retries next run)
+- Streams: `make sync-streams` (runs and real-power rides, D31; resumable;
+  success/unavailable are terminal statuses in raw_strava.streams, failed
+  retries next run)
 - CLI:     `running-pipeline athlete` / `running-pipeline authorize` /
   `running-pipeline sync-activities [--full]` /
   `running-pipeline sync-weather [--full]`
@@ -425,9 +450,12 @@ adjacent refactoring unless explicitly requested.
 
 ## Scope constraints — Cycling domain (v2.0)
 - Running output is byte-identical: no running model, mart, view, or
-  test changes in any C-phase. D15 is untouched — no ride streams.
+  test changes in any C-phase. D15 was untouched through C3; v2.4 adds a
+  ride branch for real-power rides only (D31) and an owner-approved sport
+  filter on two run stream views.
 - No power fields modeled while `device_watts` is false — estimated
-  watts/kilojoules live in raw JSONB only (D27).
+  watts/kilojoules live in raw JSONB only (D27, as amended by v2.4: power
+  comes only from the `watts` stream of real-power rides).
 - Ride grain excludes `EBikeRide`/`EMountainBikeRide`; `VirtualRide`
   is indoor-flagged and its segment efforts never reach marts (D23,
   D28).

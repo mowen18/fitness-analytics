@@ -36,6 +36,8 @@ ACTIVITIES_PER_PAGE_MAX = 200  # Strava's documented maximum
 # Stream types for drift analysis (plan Phase 5): elapsed seconds, HR,
 # smoothed velocity, moving flag, grade.
 STREAM_TYPES = ("time", "heartrate", "velocity_smooth", "moving", "grade_smooth")
+# D31 (v2.4): real-power rides. Run requests stay on STREAM_TYPES unchanged.
+RIDE_STREAM_TYPES = (*STREAM_TYPES, "distance", "watts")
 # Backoff between retries of transient failures (connection errors, 5xx);
 # one initial attempt plus one retry per entry.
 TRANSIENT_RETRY_BACKOFF_SECONDS = (1, 2, 4)

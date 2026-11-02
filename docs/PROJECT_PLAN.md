@@ -103,9 +103,9 @@ statement; precedent is cardiac drift (Release 1.1) and Airflow
 
 * Real-time / event-driven ingestion (e.g., Strava webhooks)
 * Cloud-hosted components (e.g., an always-on webhook receiver)
-* Stream-derived rolling speed and stop-loss metrics (ride branch of
-  the D15 stream fetch gate, idle-speed threshold, pedaling-time
-  share)
+* Stream-derived rolling speed and stop-loss metrics (idle-speed
+  threshold, pedaling-time share; v2.4 admitted a ride branch of the D15
+  stream fetch gate for real-power rides only, D31)
 * Polyline-based segment bearing for winding segments
 * Segment efforts for runs
 * Ride cardiac drift (coasting breaks the D16 halves comparison)
@@ -1246,3 +1246,39 @@ recorded addendum, never silently skippable. Phases C1–C3 added
 (C1+C2 = Release 2.0, C3 = Release 2.1); stream-derived rolling
 speed and stop-loss, polyline bearings, run segment efforts, ride
 drift, and the segment HR-band analog join the Deferred list.
+
+# Revision v2.4 — 2026-11-02 — Ride power stream and one-second grid
+
+Recorded in `docs/decisions/v2.4-ride-power-grid.md`.
+Summary: rides have real power from a left-crank meter since 2026-10-24,
+the case D27 anticipated. New decisions D31–D32. D31: rides with
+`device_watts` true, a D23 ride type, moving time past the same 20-minute
+fetch gate, and no HR requirement join the daily `sync-streams`, on their
+own key set (the five run keys + `distance` + `watts`); run requests are
+unchanged, and there is no backfill flag or target. D32:
+`stg_strava__ride_power_samples` → `int_ride_power_grid` (ride × second,
+`fill_reason` observed / held / stopped / missing) →
+`int_ride_power_coverage`. Vars: `power_hold_max_gap_s` 3,
+`power_stopped_speed_mps` 2.0 (owner ruling after reviewing the gaps a
+1.0 threshold called missing). D15 gains a ride branch limited to D31, and
+D27 now permits power from the `watts` stream of real-power rides only.
+One owner exception to the v2.0 running-model rule: a sport filter on
+`int_run_stream_samples` and `int_run_stream_state`, landed before any ride
+stream row existed; the running output and all three stream views stayed
+identical, verified by bidirectional `EXCEPT ALL`. Known limit: the form
+of a power dropout is unobserved. Strava's `average_watts` and
+`weighted_average_watts` must not be used as a cross-check in the metrics
+phase. Metrics, marts, and views are out of scope.
+
+**Numbering gap.** The owner chose v2.4. Revisions v2.1–v2.3 are not in
+this log, and this revision does not add them; `docs/test-speed-plan.md`
+names v2.3 as training load.
+
+## Open follow-ups
+
+- **Rate-limit headers.** The Strava responses inspected on 2026-11-02
+  carried no rate-limit headers (the last response of each of two passes).
+  `rate_limit_approaching()` reads those headers, so it cannot trip on such
+  responses, and syncs would run until a 429. The 429 stop still works. No
+  fix yet; first confirm whether the headers are absent on every endpoint.
+

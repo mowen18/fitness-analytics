@@ -17,9 +17,9 @@ metrics, tests, and docs — the dashboard is a thin cap.
   improving? (cycling)
 
 **Full spec:** [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) (decisions
-D1–D30 are locked, revisable only by recorded addendum; the plan's
+D1–D32 are locked, revisable only by recorded addendum; the plan's
 Revisions section and [docs/decisions/](docs/decisions/) record every
-change, v1.1 through v2.0).
+change, v1.1 through v2.4; v2.1–v2.3 are not in the log).
 **Status:** running domain complete — Phases 0–6 plus revisions through
 v1.9 implemented and verified. Cycling domain (v2.0): Phases C1 and C2
 merged — rides core models, segment-effort ingestion (D24), the
@@ -30,6 +30,9 @@ is implemented and live-verified: the one-time direction backfill
 drained in a single `make reconcile-weather` pass, every cached hour
 now carries a direction or an explicit NULL, and running output stayed
 byte-identical through both verification regimes.
+Revision v2.4 (ride power, D31/D32) lands the per-second `watts` stream
+for rides with a real power meter and a one-second grid with an explicit
+fill rule. Power metrics are a later phase; no mart or view reads it yet.
 
 ## Architecture
 
@@ -110,7 +113,7 @@ make reconcile        # full reconciliation from SYNC_START_DATE
 make backfill-coordinates # resolve activity-start coordinates (payload, else polyline)
 make sync-weather     # fetch hourly weather for outdoor runs and rides not yet covered
 make reconcile-weather # re-fetch weather even for already-cached hours
-make sync-streams     # backfill activity streams for fetch-eligible runs
+make sync-streams     # backfill activity streams for fetch-eligible runs and power rides
 make sync-segment-efforts # backfill segment efforts for D23 rides (detail fetches)
 make app              # launch the Streamlit dashboard (five views)
 make all              # full refresh: every sync, then dbt build
@@ -266,6 +269,7 @@ flowchart LR
 
     subgraph staging["Staging"]
         model_running_analytics_stg_strava__activities["stg_strava__activities"]
+        model_running_analytics_stg_strava__ride_power_samples["stg_strava__ride_power_samples"]
         model_running_analytics_stg_strava__segment_efforts["stg_strava__segment_efforts"]
         model_running_analytics_stg_strava__segments["stg_strava__segments"]
         model_running_analytics_stg_weather__hourly["stg_weather__hourly"]
@@ -274,6 +278,8 @@ flowchart LR
     subgraph intermediate["Intermediate"]
         model_running_analytics_int_band_window_samples["int_band_window_samples"]
         model_running_analytics_int_ride_measures["int_ride_measures"]
+        model_running_analytics_int_ride_power_coverage["int_ride_power_coverage"]
+        model_running_analytics_int_ride_power_grid["int_ride_power_grid"]
         model_running_analytics_int_rides_with_weather["int_rides_with_weather"]
         model_running_analytics_int_run_band_assessment["int_run_band_assessment"]
         model_running_analytics_int_run_efficiency["int_run_efficiency"]
@@ -327,6 +333,7 @@ flowchart LR
     model_running_analytics_int_band_window_samples --> model_running_analytics_int_run_band_assessment
     model_running_analytics_int_ride_measures --> model_running_analytics_fct_rides
     model_running_analytics_int_ride_measures --> model_running_analytics_int_segment_efforts
+    model_running_analytics_int_ride_power_grid --> model_running_analytics_int_ride_power_coverage
     model_running_analytics_int_rides_with_weather --> model_running_analytics_int_ride_measures
     model_running_analytics_int_run_band_assessment --> model_running_analytics_fct_band_candidates
     model_running_analytics_int_run_band_assessment --> model_running_analytics_fct_run_band_segments
@@ -345,7 +352,10 @@ flowchart LR
     model_running_analytics_mart_run_drift --> model_running_analytics_mart_drift_trend
     model_running_analytics_mart_weekly_training --> model_running_analytics_mart_efficiency_trend
     model_running_analytics_stg_strava__activities --> model_running_analytics_int_rides_with_weather
+    model_running_analytics_stg_strava__activities --> model_running_analytics_int_run_stream_samples
+    model_running_analytics_stg_strava__activities --> model_running_analytics_int_run_stream_state
     model_running_analytics_stg_strava__activities --> model_running_analytics_int_runs_with_weather
+    model_running_analytics_stg_strava__ride_power_samples --> model_running_analytics_int_ride_power_grid
     model_running_analytics_stg_strava__segment_efforts --> model_running_analytics_int_segment_efforts
     model_running_analytics_stg_strava__segments --> model_running_analytics_int_segment_efforts
     model_running_analytics_stg_strava__segments --> model_running_analytics_int_segment_geometry
@@ -359,11 +369,13 @@ flowchart LR
     seed_running_analytics_temperature_bands --> model_running_analytics_mart_ride_quality
     seed_running_analytics_temperature_bands --> model_running_analytics_mart_run_quality
     source_running_analytics_raw_strava_activities --> model_running_analytics_stg_strava__activities
+    source_running_analytics_raw_strava_activities --> model_running_analytics_stg_strava__ride_power_samples
     source_running_analytics_raw_strava_activity_coordinates --> model_running_analytics_stg_strava__activities
     source_running_analytics_raw_strava_segment_efforts --> model_running_analytics_stg_strava__segment_efforts
     source_running_analytics_raw_strava_segments --> model_running_analytics_stg_strava__segments
     source_running_analytics_raw_strava_streams --> model_running_analytics_int_run_stream_samples
     source_running_analytics_raw_strava_streams --> model_running_analytics_int_run_stream_state
+    source_running_analytics_raw_strava_streams --> model_running_analytics_stg_strava__ride_power_samples
     source_running_analytics_raw_weather_hourly --> model_running_analytics_stg_weather__hourly
 ```
 <!-- dbt-dag:end -->
@@ -379,12 +391,15 @@ inventory but deliberately not modeled downstream.
 | Layer | Model | Schema | Grain |
 |---|---|---|---|
 | Staging | `stg_strava__activities` | `staging` | one row per activity, any sport type |
+| Staging | `stg_strava__ride_power_samples` | `staging` | one row per stream sample of a real-power ride: watts and distance as received (D32) |
 | Staging | `stg_weather__hourly` | `staging` | one row per D7 cell + UTC hour, metric & imperial units |
 | Intermediate | `int_band_window_samples` | `intermediate` | one row per activity + pooled band-window sample: HR band + capped dwell contribution (D22) |
+| Intermediate | `int_ride_power_coverage` | `intermediate` | one row per real-power ride: seconds by fill reason and coverage (D32) |
+| Intermediate | `int_ride_power_grid` | `intermediate` | one row per real-power ride per second: observed and filled watts, fill reason (D32) |
 | Intermediate | `int_run_band_assessment` | `intermediate` | one row per band candidate — window stats + the D22 exclusion ladder, encoded once |
 | Intermediate | `int_run_efficiency` | `intermediate` | one row per running activity — derived measures, weather context, efficiency and validity verdict; the sole parent of `fct_runs`, and also feeds `fct_drift_candidates` |
-| Intermediate | `int_run_stream_samples` | `intermediate` | one row per activity + aligned stream sample |
-| Intermediate | `int_run_stream_state` | `intermediate` | one row per stream-fetch attempt: status + required-array presence |
+| Intermediate | `int_run_stream_samples` | `intermediate` | one row per run + aligned stream sample |
+| Intermediate | `int_run_stream_state` | `intermediate` | one row per run's stream-fetch attempt: status + required-array presence |
 | Intermediate | `int_runs_with_weather` | `intermediate` | one row per running activity + nearest qualifying observation |
 | Core | `fct_band_candidates` | `analytics` | one row per band candidate — projection of the assessment: window stats + exclusion verdict (D22) |
 | Core | `fct_drift_candidates` | `analytics` | one row per drift candidate + halves and exclusion verdict |
@@ -522,7 +537,8 @@ activities are flagged in core and held out of segment marts (D28),
 reported per segment as `virtual_effort_count`; a parent ride failing
 D25's sanity checks marks its efforts with the ride's exclusion reason
 as a displayed caveat, never a filter. No power fields are modeled
-anywhere in the chain (D27): estimated watts stay raw-JSONB-only.
+anywhere in the segment chain (D27): estimated watts stay
+raw-JSONB-only.
 
 ### Headwind context (cycling, D29/D30)
 
@@ -570,6 +586,26 @@ automatically next run, and an absent row means not yet attempted. At
 most `STREAM_MAX_ACTIVITIES_PER_RUN` (default 50) activities per
 invocation; rate limits stop the run cleanly between fetches with the
 same exit-code-3 contract as the other syncs.
+
+**Ride power (v2.4, D31/D32).** `make sync-streams` also fetches rides
+with real power: `device_watts` true, a D23 ride type, moving time past
+the same 20-minute gate, no heart-rate requirement. Rides request the run
+keys plus `distance` and `watts`; run requests are unchanged. Other rides
+stay unfetched, and estimated watts never reach a model.
+`int_ride_power_grid` expands each ride to one row per second and labels
+each second:
+
+| `fill_reason` | Meaning | `watts` |
+|---|---|---|
+| `observed` | Strava sent a value; coasting is a real 0 W | as received |
+| `held` | run of ≤ `power_hold_max_gap_s` (3) NULL seconds after an observed value | last observed value |
+| `stopped` | longer run, speed across it below `power_stopped_speed_mps` (2.0) | NULL |
+| `missing` | anything else, including the start or end of a ride | NULL |
+
+`int_ride_power_coverage` reports coverage = (observed + held) /
+(total − stopped) per ride, with no threshold yet. Power metrics are a
+later phase. The rules and their limits are in
+[docs/decisions/v2.4-ride-power-grid.md](docs/decisions/v2.4-ride-power-grid.md).
 
 **Cardiac drift (decoupling)** — per D16, each analyzed run drops
 non-moving samples, trims the first 10 minutes (warm-up) and final
@@ -677,6 +713,17 @@ it.
   the same segment. They stay in `fct_segment_efforts`, flagged, and
   the segments view captions how many were held out — excluded from
   statistics, never silently absent.
+* **How a power dropout arrives is unobserved** (v2.4): the first six
+  power rides carry no NULL watts and no sustained 0 W while pedaling, so
+  they cannot show what a real dropout looks like. A dropout arriving as
+  0 W would be labeled `observed`, and coverage would not show it.
+  Coverage of 1.0 means no gap counted as a dropout, not that the meter
+  never dropped out.
+* **`power_stopped_speed_mps` = 2.0 is a judgment call** (v2.4): no gap in
+  these rides exceeds 1.88 m/s, so no real dropout sets the upper bound.
+  A real recording gap on a very slow climb would be labeled `stopped`.
+* **Strava's `average_watts` and `weighted_average_watts` are not a
+  cross-check** (v2.4): they disagree with the stream and with each other.
 * The **dashboard screenshots** in `images/` are still pending capture
   now that the marts are populated. (dbt lineage is rendered directly
   in this README via `make dbt-dag`.)
