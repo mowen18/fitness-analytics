@@ -241,3 +241,28 @@ models:
               arguments: {min_value: 0}
       - name: average_grade_pct
         description: Average grade, percent.
+
+  - name: stg_strava__ride_power_samples
+    description: >
+      One row per stream sample of a ride with real power (v2.4, D32):
+      stream status success, device_watts literally true, sport type in
+      ride_sport_types. Estimated watts, real-power runs (device_watts
+      is true on runs too), and e-bikes never appear. Values are as
+      received. Seconds absent from the time stream are absent here;
+      int_ride_power_grid expands them. Known limit: the form of a power
+      dropout is unobserved (no NULL watts in the six rides inspected on
+      2026-11-02), so a dropout arriving as 0 W is indistinguishable from
+      coasting.
+    columns:
+      - name: activity_id
+        description: Strava activity id (a real-power ride).
+        tests: [not_null]
+      - name: t_sec
+        description: Seconds since activity start (the time stream, never the array index).
+        tests: [not_null]
+      - name: watts
+        description: >
+          Power as received. NULL means missing, never zero; coasting is a
+          real 0 W. NULL on every row when the payload has no watts array.
+      - name: distance_m
+        description: Cumulative distance as received, meters; NULL when the sample carries none.

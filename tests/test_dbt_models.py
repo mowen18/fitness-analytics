@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -87,6 +88,7 @@ def insert_activity(
     average_heartrate=None,
     average_cadence=None,
     workout_type=None,
+    device_watts=None,
 ):
     payload = {
         "id": activity_id,
@@ -107,6 +109,8 @@ def insert_activity(
         "average_cadence": average_cadence,
         "workout_type": workout_type,
     }
+    if device_watts is not None:  # None: the key is absent, as on older payloads
+        payload["device_watts"] = device_watts
     conn.execute(
         """
         INSERT INTO raw_strava.activities
@@ -1708,3 +1712,134 @@ def test_view_drops_take_the_cascade_lock(db):
     locked = re.findall(r"pg_advisory_xact_lock\([^;]*\);\s*drop view if exists", result.stdout)
     assert drops, "no view drop found in the dbt debug output"
     assert len(locked) == len(drops), "a view drop ran without the cascade lock"
+
+
+# ── D31/D32: ride power (v2.4) ────────────────────────────────────────
+
+
+def power_ride(db, activity_id, *, day="2026-10-24", sport_type="Ride", device_watts=True):
+    insert_activity(
+        db,
+        activity_id,
+        sport_type=sport_type,
+        start=f"{day}T14:00:00Z",
+        start_local=f"{day}T09:00:00Z",
+        start_latlng=None,
+        distance=32000.0,
+        moving_time=7200,
+        elapsed_time=7300,
+        device_watts=device_watts,
+    )
+
+
+def insert_power_stream(db, activity_id, *, elapsed, watts, distance, status="success"):
+    """A key_by_type payload holding only what the power chain reads.
+    Lists are parallel; watts=None leaves the watts key out entirely."""
+    payload = {
+        "time": {"data": elapsed, "original_size": len(elapsed)},
+        "distance": {"data": distance, "original_size": len(elapsed)},
+    }
+    if watts is not None:
+        payload["watts"] = {"data": watts, "original_size": len(elapsed)}
+    db.execute(
+        """
+        INSERT INTO raw_strava.streams
+            (activity_id, payload, sample_count, fetched_at, ingestion_status)
+        VALUES (%s, %s, %s, now(), %s)
+        """,
+        (activity_id, json.dumps(payload), len(elapsed), status),
+    )
+
+
+@contextmanager
+def view_with_injected_row(db, relation, insert_sql):
+    """Swap a built view for a table holding its rows plus a violating row.
+
+    Power-chain views derive their guarantees from their own SQL, so no
+    raw fixture can produce a violation. Downstream views keep pointing
+    at the renamed original, which goes back in place afterwards.
+    """
+    schema, name = relation.split(".")
+    db.execute(f"ALTER VIEW {relation} RENAME TO {name}__original")
+    db.execute(f"CREATE TABLE {relation} AS SELECT * FROM {schema}.{name}__original")
+    db.execute(insert_sql)
+    db.commit()
+    try:
+        yield
+    finally:
+        db.execute(f"DROP TABLE {relation}")
+        db.execute(f"ALTER VIEW {schema}.{name}__original RENAME TO {name}")
+        db.commit()
+
+
+@pytest.mark.integration
+@pytest.mark.dbt_cycling
+def test_ride_power_samples_keep_values_and_admit_only_real_power_rides(db):
+    power_ride(db, 1)  # gap in time, NULL watts, real 0 W
+    insert_power_stream(
+        db,
+        1,
+        elapsed=[0, 1, 2, 5],
+        watts=[200, None, 0, 180],
+        distance=[0.0, 5.0, 10.0, 25.0],
+    )
+    power_ride(db, 2, day="2026-10-25")  # real power, but Strava sent no watts array
+    insert_power_stream(db, 2, elapsed=[0, 1], watts=None, distance=[0.0, 5.0])
+    # None of these may reach a power model:
+    power_ride(db, 3, day="2026-10-26", device_watts=False)  # estimated power
+    insert_power_stream(db, 3, elapsed=[0], watts=[111], distance=[0.0])
+    insert_activity(db, 4, sport_type="Ride", start="2026-10-27T14:00:00Z")  # no device_watts key
+    insert_power_stream(db, 4, elapsed=[0], watts=[111], distance=[0.0])
+    power_ride(db, 5, day="2026-10-28", sport_type="Run")  # a real-power RUN
+    insert_power_stream(db, 5, elapsed=[0], watts=[111], distance=[0.0])
+    power_ride(db, 6, day="2026-10-29", sport_type="EBikeRide")
+    insert_power_stream(db, 6, elapsed=[0], watts=[111], distance=[0.0])
+    power_ride(db, 7, day="2026-10-30")  # fetch failed: no samples
+    insert_power_stream(db, 7, elapsed=[], watts=[], distance=[], status="failed")
+    db.commit()
+
+    result = run_dbt("build", "--select", "stg_strava__ride_power_samples+")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    rows = db.execute(
+        """
+        SELECT activity_id, t_sec, watts, distance_m
+        FROM staging.stg_strava__ride_power_samples
+        ORDER BY activity_id, t_sec
+        """
+    ).fetchall()
+    assert rows == [
+        (1, 0, Decimal(200), Decimal("0.0")),
+        (1, 1, None, Decimal("5.0")),  # NULL stays NULL
+        (1, 2, Decimal(0), Decimal("10.0")),  # a real 0 W stays 0
+        (1, 5, Decimal(180), Decimal("25.0")),  # t_sec is the time stream, not the index
+        (2, 0, None, Decimal("0.0")),
+        (2, 1, None, Decimal("5.0")),
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.dbt_cycling
+def test_power_sample_pin_tests_fail_on_injected_rows(db):
+    power_ride(db, 1)
+    insert_power_stream(db, 1, elapsed=[0, 1], watts=[200, 210], distance=[0.0, 5.0])
+    power_ride(db, 2, day="2026-10-25", device_watts=False)
+    db.commit()
+    result = run_dbt("build", "--select", "stg_strava__ride_power_samples+")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    relation = "staging.stg_strava__ride_power_samples"
+    duplicate_second = f"INSERT INTO {relation} VALUES (1, 1, 5, 5)"
+    estimated_power_ride = f"INSERT INTO {relation} VALUES (2, 0, 5, 5)"
+    pins = {
+        "assert_ride_power_samples_unique_per_second": duplicate_second,
+        "assert_power_models_only_real_power_rides": estimated_power_ride,
+    }
+    for pin, insert_sql in pins.items():
+        with view_with_injected_row(db, relation, insert_sql):
+            result = run_dbt("test", "--select", pin)
+            assert result.returncode != 0, f"{pin} should fail on an injected row"
+            assert pin in result.stdout
+
+        result = run_dbt("test", "--select", pin)
+        assert result.returncode == 0, f"{pin} still failing:\n{result.stdout}"
