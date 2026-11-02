@@ -9,16 +9,20 @@ statuses, clean rate-limit stops, and the per-invocation cap.
 import json
 import logging
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import psycopg
 import pytest
 import responses
+from click.testing import CliRunner
 
+from running_pipeline import cli as cli_module
 from running_pipeline.config import Settings
 from running_pipeline.strava_client import (
     API_BASE,
+    RIDE_STREAM_TYPES,
     STREAM_TYPES,
     RateLimitExceeded,
     RateLimitStatus,
@@ -81,6 +85,16 @@ def test_requests_all_five_stream_types_keyed_by_type(tmp_path):
 
 
 @responses.activate
+def test_ride_key_set_adds_distance_and_watts_to_the_run_keys(tmp_path):
+    responses.get(f"{API_BASE}/activities/42/streams", json=stream_payload())
+
+    make_client(tmp_path).get_activity_streams(42, keys=RIDE_STREAM_TYPES)
+
+    query = parse_qs(urlparse(responses.calls[0].request.url).query)
+    assert query["keys"] == ["time,heartrate,velocity_smooth,moving,grade_smooth,distance,watts"]
+
+
+@responses.activate
 def test_404_means_unavailable_not_error(tmp_path):
     responses.get(
         f"{API_BASE}/activities/42/streams",
@@ -128,10 +142,12 @@ class FakeStreamClient:
     def __init__(self, outcomes):
         self.outcomes = outcomes
         self.calls = []
+        self.keys_requested = {}
         self._approaching = []
 
     def get_activity_streams(self, activity_id, keys=STREAM_TYPES):
         self.calls.append(activity_id)
+        self.keys_requested[activity_id] = keys
         outcome = self.outcomes[activity_id]
         if isinstance(outcome, Exception):
             raise outcome
@@ -145,7 +161,9 @@ class FakeStreamClient:
         return self._approaching
 
 
-def insert_run(db, activity_id, *, has_heartrate=True, moving_time=3000, sport_type="Run"):
+def insert_run(
+    db, activity_id, *, has_heartrate=True, moving_time=3000, sport_type="Run", device_watts=None
+):
     payload = {
         "id": activity_id,
         "sport_type": sport_type,
@@ -153,6 +171,8 @@ def insert_run(db, activity_id, *, has_heartrate=True, moving_time=3000, sport_t
         "has_heartrate": has_heartrate,
         "moving_time": moving_time,
     }
+    if device_watts is not None:  # None: the key is absent, as on older payloads
+        payload["device_watts"] = device_watts
     db.execute(
         """
         INSERT INTO raw_strava.activities
@@ -292,6 +312,196 @@ def test_batch_cap_limits_one_invocation(db, tmp_path):
     assert client.calls == [1, 2]
     assert report.eligible == 2  # the cap applies at selection time
     assert stream_statuses(db) == {1: "success", 2: "success"}
+
+
+# ── D31: ride power fetch (v2.4) ──────────────────────────────────────
+
+
+def insert_ride(db, activity_id, *, device_watts=True, sport_type="Ride", **kwargs):
+    insert_run(db, activity_id, sport_type=sport_type, device_watts=device_watts, **kwargs)
+
+
+def stored_keys(db, activity_id):
+    return db.execute(
+        "SELECT stream_types_requested FROM raw_strava.streams WHERE activity_id = %s",
+        (activity_id,),
+    ).fetchone()[0]
+
+
+@pytest.mark.integration
+def test_ride_selection_is_real_power_past_the_fetch_gate(db, tmp_path):
+    insert_ride(db, 1)  # eligible
+    insert_ride(db, 2, has_heartrate=False)  # eligible: HR never gates rides (D25)
+    insert_ride(db, 3, sport_type="GravelRide")  # eligible: a D23 ride type
+    insert_ride(db, 4, device_watts=False)  # estimated power
+    insert_ride(db, 5, device_watts=None)  # no device_watts key at all
+    insert_ride(db, 6, sport_type="EBikeRide")  # outside the D23 grain
+    insert_ride(db, 7, moving_time=1000)  # under the 20-minute fetch gate
+    db.commit()
+    client = FakeStreamClient({1: stream_payload(), 2: stream_payload(), 3: stream_payload()})
+
+    report = sync_streams(stream_settings(tmp_path), client, db)
+
+    assert client.calls == [1, 2, 3]
+    assert report.eligible == 3
+    assert stream_statuses(db) == {1: "success", 2: "success", 3: "success"}
+
+
+@pytest.mark.integration
+def test_ride_selection_respects_the_historical_window(db, tmp_path):
+    insert_ride(db, 1)
+    db.commit()
+    settings = stream_settings(tmp_path, sync_start_date="2026-07-01")
+    client = FakeStreamClient({})
+
+    report = sync_streams(settings, client, db)
+
+    assert client.calls == []
+    assert report.eligible == 0
+
+
+@pytest.mark.integration
+def test_run_requests_keep_the_unchanged_key_set(db, tmp_path):
+    insert_run(db, 1)
+    # A real-power run must stay on the run key set: 90 live runs carry
+    # device_watts = true, and the flag alone never selects ride keys.
+    insert_run(db, 2, device_watts=True)
+    db.commit()
+    client = FakeStreamClient({1: stream_payload(), 2: stream_payload()})
+
+    sync_streams(stream_settings(tmp_path), client, db)
+
+    run_keys = ("time", "heartrate", "velocity_smooth", "moving", "grade_smooth")
+    assert run_keys == STREAM_TYPES
+    assert client.keys_requested == {1: run_keys, 2: run_keys}
+    assert stored_keys(db, 1) == list(run_keys)
+    assert stored_keys(db, 2) == list(run_keys)
+
+
+@pytest.mark.integration
+def test_ride_requests_use_and_record_the_ride_key_set(db, tmp_path):
+    insert_ride(db, 1)
+    insert_ride(db, 2)
+    insert_ride(db, 3)
+    db.commit()
+    client = FakeStreamClient(
+        {1: stream_payload(), 2: None, 3: StravaApiError("Strava API failed (HTTP 503)")}
+    )
+
+    sync_streams(stream_settings(tmp_path), client, db)
+
+    assert client.keys_requested == {
+        1: RIDE_STREAM_TYPES,
+        2: RIDE_STREAM_TYPES,
+        3: RIDE_STREAM_TYPES,
+    }
+    # Status-only rows record the keys actually sent, too.
+    for activity_id in (1, 2, 3):
+        assert stored_keys(db, activity_id) == list(RIDE_STREAM_TYPES)
+
+
+@pytest.mark.integration
+def test_ride_branch_never_selects_a_run(db, tmp_path):
+    # No HR, so the run branch rejects it (D15). A ride branch that read
+    # device_watts without the sport type would pick it up.
+    insert_run(db, 1, has_heartrate=False, device_watts=True)
+    db.commit()
+    client = FakeStreamClient({})
+
+    report = sync_streams(stream_settings(tmp_path), client, db)
+
+    assert client.calls == []
+    assert report.eligible == 0
+
+
+@pytest.mark.integration
+def test_successful_ride_row_without_watts_is_never_reselected(db, tmp_path):
+    insert_ride(db, 1)
+    db.commit()
+    settings = stream_settings(tmp_path)
+    # device_watts is true but Strava returned no watts array.
+    assert "watts" not in stream_payload()
+    first_client = FakeStreamClient({1: stream_payload()})
+    sync_streams(settings, first_client, db)
+    assert stream_statuses(db) == {1: "success"}
+
+    second_client = FakeStreamClient({})
+    report = sync_streams(settings, second_client, db)
+
+    assert second_client.calls == []
+    assert report.eligible == 0
+
+
+@pytest.mark.integration
+def test_failed_ride_retries_and_unavailable_ride_is_terminal(db, tmp_path):
+    insert_ride(db, 1)
+    insert_ride(db, 2)
+    db.commit()
+    settings = stream_settings(tmp_path)
+    sync_streams(
+        settings,
+        FakeStreamClient({1: StravaApiError("Strava API failed (HTTP 503)"), 2: None}),
+        db,
+    )
+    assert stream_statuses(db) == {1: "failed", 2: "unavailable"}
+
+    client = FakeStreamClient({1: stream_payload()})
+    sync_streams(settings, client, db)
+
+    assert client.calls == [1]
+    assert stream_statuses(db) == {1: "success", 2: "unavailable"}
+
+
+@pytest.mark.integration
+def test_rate_limit_on_a_ride_stops_cleanly_keeping_committed_rows(db, tmp_path):
+    insert_ride(db, 1)
+    insert_ride(db, 2)
+    db.commit()
+    client = FakeStreamClient(
+        {1: stream_payload(), 2: RateLimitExceeded("HTTP 429: daily 1000/1000")}
+    )
+
+    report = sync_streams(stream_settings(tmp_path), client, db)
+
+    assert report.stopped_early is True  # the CLI turns this into exit 3
+    assert stream_statuses(db) == {1: "success"}
+
+
+@pytest.mark.integration
+def test_cli_exits_3_when_a_ride_fetch_hits_the_rate_limit(db, tmp_path, monkeypatch):
+    insert_ride(db, 1)
+    db.commit()
+    client = FakeStreamClient({1: RateLimitExceeded("HTTP 429: daily 1000/1000")})
+
+    @contextmanager
+    def shared_connection(settings):
+        yield db
+
+    monkeypatch.setattr(cli_module, "load_settings", lambda: stream_settings(tmp_path))
+    monkeypatch.setattr(cli_module, "StravaClient", lambda settings: client)
+    monkeypatch.setattr(cli_module, "get_connection", shared_connection)
+
+    result = CliRunner().invoke(cli_module.cli, ["sync-streams"])
+
+    assert client.calls == [1]
+    assert result.exit_code == 3, result.output
+    assert stream_statuses(db) == {}
+
+
+@pytest.mark.integration
+def test_batch_cap_is_shared_with_runs_first(db, tmp_path):
+    insert_ride(db, 1)  # earlier than the runs: order is by branch, not date
+    insert_run(db, 2)
+    insert_run(db, 3)
+    insert_ride(db, 4)
+    db.commit()
+    settings = stream_settings(tmp_path, stream_max_activities_per_run=3)
+    client = FakeStreamClient({1: stream_payload(), 2: stream_payload(), 3: stream_payload()})
+
+    report = sync_streams(settings, client, db)
+
+    assert client.calls == [2, 3, 1]
+    assert report.eligible == 3
 
 
 # ── DDL (@integration) ────────────────────────────────────────────────
