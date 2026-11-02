@@ -24,6 +24,11 @@ power_model_rows as (
     select activity_id, 'int_ride_power_grid' as model
     from {{ ref('int_ride_power_grid') }}
 
+    union all
+
+    select activity_id, 'int_ride_power_coverage' as model
+    from {{ ref('int_ride_power_coverage') }}
+
 )
 
 select power_model_rows.activity_id, power_model_rows.model

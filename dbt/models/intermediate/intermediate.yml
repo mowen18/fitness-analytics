@@ -436,3 +436,34 @@ models:
       - name: distance_m
         description: Observed cumulative distance, meters; NULL where there is no sample, never interpolated.
 
+  - name: int_ride_power_coverage
+    description: >
+      One row per real-power ride (v2.4, D32): seconds by fill_reason and
+      coverage = (observed + held) / (total - stopped), 4 decimal places.
+      No threshold in this phase. Known limit: coverage counts only the
+      gaps the grid can see. A dropout arriving as 0 W is labeled observed,
+      so coverage of 1.0 does not show the meter never dropped out.
+    columns:
+      - name: activity_id
+        description: Strava activity id (a real-power ride).
+        tests: [unique, not_null]
+      - name: total_s
+        description: Grid seconds in the ride (last t_sec + 1).
+        tests: [not_null]
+      - name: observed_s
+        description: Seconds with a received watts value, including real 0 W.
+        tests: [not_null]
+      - name: held_s
+        description: Seconds holding the last observed value.
+        tests: [not_null]
+      - name: stopped_s
+        description: Seconds in a run below power_stopped_speed_mps; out of the denominator.
+        tests: [not_null]
+      - name: missing_s
+        description: Seconds with no value that are neither held nor stopped.
+        tests: [not_null]
+      - name: coverage
+        description: >
+          (observed_s + held_s) / (total_s - stopped_s). NULL when
+          total_s - stopped_s is 0: missing, never zero.
+

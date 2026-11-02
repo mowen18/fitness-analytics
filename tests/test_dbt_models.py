@@ -1995,3 +1995,67 @@ def test_power_grid_pin_tests_fail_on_injected_rows(db):
         with view_with_injected_row(db, relation, insert_sql):
             result = run_dbt("test", "--select", pin)
             assert result.returncode != 0, f"{pin} should fail on {reason} with watts"
+
+
+@pytest.mark.integration
+@pytest.mark.dbt_cycling
+def test_ride_power_coverage_counts_and_formula(db):
+    n = None
+    # 1 held, 4 stopped (flat), 4 missing (advancing), 4 observed = 13 rows:
+    # coverage = (4 + 1) / (13 - 4) = 5 / 9.
+    add_power_fixture(
+        db,
+        1,
+        [100, n, 100, n, n, n, n, 100, n, n, n, n, 100],
+        distance=[0, 0, 0, 0, 0, 0, 0, 0, 10, 20, 30, 40, 50],
+    )
+    add_power_fixture(db, 2, [100, 100, 100])  # fully observed
+    # Real power but no watts array: nothing observed, coverage is 0, not NULL.
+    power_ride(db, 3, day="2026-10-03")
+    insert_power_stream(db, 3, elapsed=[0, 1], watts=None, distance=[0.0, 5.0])
+    # A non-power ride gets no coverage row.
+    power_ride(db, 4, day="2026-10-04", device_watts=False)
+    insert_power_stream(db, 4, elapsed=[0], watts=[111], distance=[0.0])
+    db.commit()
+
+    result = run_dbt("build", "--select", "stg_strava__ride_power_samples+")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    rows = db.execute(
+        """
+        SELECT activity_id, total_s, observed_s, held_s, stopped_s, missing_s, coverage
+        FROM intermediate.int_ride_power_coverage
+        ORDER BY activity_id
+        """
+    ).fetchall()
+    assert rows == [
+        (1, 13, 4, 1, 4, 4, Decimal("0.5556")),
+        (2, 3, 3, 0, 0, 0, Decimal("1.0000")),
+        (3, 2, 0, 0, 0, 2, Decimal("0.0000")),
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.dbt_cycling
+def test_power_coverage_pin_tests_fail_on_injected_rows(db):
+    power_ride(db, 1)
+    insert_power_stream(db, 1, elapsed=[0, 1], watts=[200, 210], distance=[0.0, 5.0])
+    power_ride(db, 2, day="2026-10-25", device_watts=False)
+    db.commit()
+    result = run_dbt("build", "--select", "stg_strava__ride_power_samples+")
+    assert result.returncode == 0, f"dbt build failed:\n{result.stdout}"
+
+    relation = "intermediate.int_ride_power_coverage"
+    pins = {
+        # The reasons do not add up to the row count.
+        "assert_ride_power_coverage_counts_sum_to_grid": "(1, 5, 1, 1, 1, 1, 0.5)",
+        "assert_power_models_only_real_power_rides": "(2, 1, 1, 0, 0, 0, 1)",
+    }
+    for pin, values in pins.items():
+        with view_with_injected_row(db, relation, f"INSERT INTO {relation} VALUES {values}"):
+            result = run_dbt("test", "--select", pin)
+            assert result.returncode != 0, f"{pin} should fail on an injected row"
+            assert pin in result.stdout
+
+        result = run_dbt("test", "--select", pin)
+        assert result.returncode == 0, f"{pin} still failing:\n{result.stdout}"
